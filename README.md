@@ -2,7 +2,7 @@
 
 A gap assessment workspace for Sri Lanka's Personal Data Protection Act, No. 9 of 2022, as amended by Act No. 22 of 2025. Built for TechNeura Labs.
 
-A scoping profile decides which checks apply. Documents and a short question list supply the evidence. A consultant records findings, and the workspace produces the gap register, the remediation roadmap and the report.
+The work runs in four stages: Scope, Evidence, Review and Results. Scoping asks one question at a time and decides which checks apply. Documents and a short question list supply the evidence. A consultant records findings, and the workspace produces the gaps, the remediation roadmap and the report.
 
 ## Files
 

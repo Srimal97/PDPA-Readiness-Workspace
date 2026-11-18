@@ -19,12 +19,6 @@
     dpo: function (c) { return c.id === 's20-5'; },
     breach: function (c) { return c.id === 's23-1' || c.id === 's23-2'; }
   };
-  var VIEWS = {
-    overview: ['Overview', ''], scope: ['Scoping profile', 'Each answer switches checks on or off.'], documents: ['Documents', 'One document can answer many checks.'],
-    questions: ['Questions', 'Only what the documents do not already answer.'], assessment: ['Assessment', 'Every check, with the text of the Act.'],
-    register: ['Processing register', 'Record of processing activities, checked as you type.'], gaps: ['Gap register', 'Partial and missing obligations, rated.'],
-    roadmap: ['Remediation roadmap', 'Actions grouped by when to start them.'], report: ['Report', 'Built from the findings as they stand.'], method: ['Method and sources', 'How the tool decides, and what it rests on.']
-  };
   var PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
   var PDFW = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   var MAMMOTH = 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js';
@@ -50,7 +44,7 @@
   function blank() { return { config: {}, profile: {}, evidence: {}, responses: {}, findings: {}, released: {}, activities: {} }; }
   var state = blank();
   var ui = {
-    view: 'overview', lastView: '', sel: null, lastSel: null, f: { q: '', dom: '', st: '', track: '', comm: '' }, gf: '', qf: '',
+    view: 'home', lastView: '', sel: null, lastSel: null, f: { q: '', dom: '', st: '', track: '', comm: '' }, gf: '', qf: '',
     mode: 'loading', role: 'consultant', asCustomer: false, readonly: false, example: false, exampleAuto: false,
     saving: 0, saveErr: '', slow: false, drawer: null, dialog: null, toasts: [], names: {}, uid: null, tour: null, tourPrev: null,
     db: null, user: null, assets: null, downloads: null, sample: null
@@ -299,386 +293,6 @@
     return '';
   }
 
-  /* ---------- render plumbing ---------- */
-  function route() { var h = (location.hash || '').replace('#', ''); ui.view = VIEWS[h] ? h : 'overview'; }
-  function editing() { var a = document.activeElement; return a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'checkbox' && a.type !== 'file')); }
-  var renderPending = false;
-  function softRender() { if (editing()) { renderPending = true; return; } render(); }
-  var rendering = false;
-  function render() {
-    if (rendering) { renderPending = true; return; }
-    rendering = true;
-    try { renderNow(); } finally { rendering = false; }
-    if (renderPending && !editing()) { renderPending = false; rendering = true; try { renderNow(); } finally { rendering = false; } }
-  }
-  function renderNow() {
-    touch(); renderPending = false;
-    var root = document.getElementById('app'), keep = {}, ids = ['view', 'list', 'detail', 'drb'];
-    ids.forEach(function (id) { var el = document.getElementById(id); if (el) keep[id] = el.scrollTop; });
-    var a = document.activeElement, focusSel = null;
-    if (a && a.id) focusSel = '#' + a.id;
-    else if (a && a.dataset && a.dataset.act) focusSel = Object.keys(a.dataset).map(function (k) { return '[data-' + k.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); }) + '="' + String(a.dataset[k]).replace(/"/g, '\\"') + '"]'; }).join('');
-    root.innerHTML = shell();
-    if (ui.view !== ui.lastView) { delete keep.view; delete keep.list; delete keep.detail; }
-    if (ui.sel !== ui.lastSel) delete keep.detail;
-    ui.lastView = ui.view; ui.lastSel = ui.sel;
-    ids.forEach(function (id) { var el = document.getElementById(id); if (el && keep[id]) el.scrollTop = keep[id]; });
-    if (focusSel) { try { var f = root.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); } catch (e) { /* selector not valid */ } }
-    if (ui.tour) positionTour();
-  }
-  function toast(msg, kind) {
-    var t = { id: uid(), msg: msg, kind: kind || '' }; ui.toasts.push(t);
-    var box = document.getElementById('toasts'); if (box) box.innerHTML = toastsHTML(true);
-    setTimeout(function () { ui.toasts = ui.toasts.filter(function (x) { return x !== t; }); var b = document.getElementById('toasts'); if (b) b.innerHTML = toastsHTML(true); }, kind === 'bad' ? 7000 : 3500);
-  }
-  function toastsHTML(inner) { var h = ui.toasts.map(function (t) { return '<div class="toast ' + t.kind + '" role="status">' + esc(t.msg) + '</div>'; }).join(''); return inner ? h : '<div class="toasts" id="toasts">' + h + '</div>'; }
-  function ask(title, text, ok, fn) { ui.dialog = { title: title, text: text, ok: ok }; dialogFn = fn; render(); }
-
-  /* ---------- shell ---------- */
-  function daysLeft() { return Math.ceil((GO_LIVE.getTime() - Date.now()) / 86400000); }
-  function saveHTML() {
-    if (ui.example) return '<span class="dot off"></span>Example data. Nothing is saved.';
-    if (ui.saveErr) return '<span class="dot err"></span>' + esc(ui.saveErr);
-    if (ui.readonly) return '<span class="dot off"></span>View only';
-    if (ui.mode === 'local') return '<span class="dot busy"></span>Saved in this browser only';
-    if (pending.size) return '<span class="dot busy"></span>Saving';
-    return '<span class="dot"></span>Saved' + (ui.slow ? '. Data may be out of date.' : '');
-  }
-  function navItems() {
-    var S = scope(), d = D(), rel = !!d.config.released, cust = asCust();
-    var unans = visibleQs().filter(function (q) { return !answered(q); }).length;
-    var docsOut = neededDocs().filter(function (x) { return !x.state; }).length;
-    var qs = questionList().filter(function (x) { return !(d.responses[x.c.id] && d.responses[x.c.id].a); }).length;
-    var items = [['overview', 'Overview', '', false]];
-    items.push(['scope', 'Scoping profile', unans || '', unans > 0]);
-    items.push(['documents', 'Documents', docsOut || '', false]);
-    items.push(['questions', 'Questions', qs || '', false]);
-    items.push(['register', 'Processing register', Object.keys(d.activities || {}).length || '', false]);
-    var out = [['Collect', items.slice(1)]];
-    var assess = [];
-    if (!cust) { var rev = S.list.filter(function (x) { return info(x.c).s === 'review'; }).length; assess.push(['assessment', 'Assessment', rev || '', rev > 0]); }
-    if (!cust || rel) { var g = gapList().length; assess.push(['gaps', 'Gap register', g || '', false], ['roadmap', 'Roadmap', '', false], ['report', 'Report', '', false]); }
-    if (assess.length) out.push([cust ? 'Findings' : 'Assess and report', assess]);
-    out.push(['Reference', [['method', 'Method and sources', '', false]]]);
-    return { top: items[0], groups: out };
-  }
-  function railHTML() {
-    var n = navItems();
-    function a(it) { return '<a href="#' + it[0] + '" class="' + (ui.view === it[0] ? 'on' : '') + '"' + (ui.view === it[0] ? ' aria-current="page"' : '') + '>' + esc(it[1]) + (it[2] !== '' ? '<span class="cnt ' + (it[3] ? 'hot' : '') + '">' + it[2] + '</span>' : '') + '</a>'; }
-    var h = '<aside class="rail"><div class="brand"><div class="brand-mark">PDPA <span>Readiness</span></div><div class="brand-sub">TechNeura Labs</div></div><nav class="nav" aria-label="Sections">' + a(n.top);
-    n.groups.forEach(function (g) { h += '<div class="nav-h">' + g[0] + '</div>' + g[1].map(a).join(''); });
-    h += '</nav><div class="rail-foot">';
-    if (ui.role === 'consultant') h += '<div class="seg" role="group" aria-label="View as"><button data-act="as" data-v="0" class="' + (ui.asCustomer ? '' : 'on') + '">Consultant</button><button data-act="as" data-v="1" class="' + (ui.asCustomer ? 'on' : '') + '">Customer view</button></div>';
-    h += '<div class="save" id="save">' + saveHTML() + '</div></div></aside>';
-    return h;
-  }
-  function bannerHTML() {
-    if (ui.tour) return '<div class="banner">' + ic('info') + '<span><b>Guided tour.</b> Everything shown is example data for a fictional company. Nothing is saved.</span></div>';
-    if (!ui.example) return '';
-    return '<div class="banner">' + ic('info') + '<span><b>You are looking at example data for a fictional company.</b> Explore freely. Nothing here is saved.</span>' + (canWrite() ? '<button class="btn pri sm" data-act="start">Start this engagement ' + ic('arrow') + '</button>' : '') + '</div>';
-  }
-  function topHTML() {
-    var v = VIEWS[ui.view], d = D(), dl = daysLeft(), client = d.config.client || '';
-    var sub = ui.view === 'overview' ? (client ? esc(client) : 'Client not named yet') : v[1];
-    return '<header class="top"><div><h1>' + v[0] + '</h1><div class="sub">' + sub + '</div></div><div class="top-r">' +
-      (ui.view !== 'overview' && client ? '<span class="tag">' + esc(client) + '</span>' : '') +
-      (ui.tour ? '' : '<button class="btn sm" data-act="tour">' + ic('spark') + 'Take a tour</button>') +
-      '<span class="count">' + (dl > 0 ? '<b>' + dl + '</b> days to 1 January 2027' : 'In operation since 1 January 2027') + '</span></div></header>';
-  }
-  function shell() {
-    if (ui.mode === 'loading') return '<div class="load"><div>Opening the workspace</div></div>';
-    var cust = asCust(), rel = !!D().config.released, v = ui.view;
-    if (cust && v === 'assessment') v = ui.view = 'overview';
-    if (cust && !rel && (v === 'gaps' || v === 'roadmap' || v === 'report')) v = ui.view = 'overview';
-    var body = v === 'assessment' ? assessmentView() : '<div class="view" id="view">' + ({ overview: overviewView, scope: scopeView, documents: documentsView, questions: questionsView, register: registerView, gaps: gapsView, roadmap: roadmapView, report: reportView, method: methodView }[v])() + '</div>';
-    return '<div class="app" style="position:relative">' + railHTML() + '<div class="main">' + bannerHTML() + topHTML() + body + '</div>' + drawerHTML() + dialogHTML() + toastsHTML() + tourHTML() + '</div>';
-  }
-  function pill(s, prov) { return '<span class="pill ' + s + '">' + ST[s] + '</span>' + (prov ? ' <span class="prov" title="Not yet reviewed by a consultant">Provisional</span>' : ''); }
-  function commHTML(k, short) { return '<span class="comm ' + k + '" title="' + esc(L.COMM[k].desc) + '"><i></i>' + (short ? L.COMM[k].short : L.COMM[k].label) + '</span>'; }
-  function actHTML(c) {
-    var src = c.track === 'tech' ? 'TechNeura assessment criterion. ' + esc(c.basis || '') : esc(L.ACT) + ', ' + esc(c.ref) + (c.amended ? ', as amended by Act No. 22 of 2025' : '');
-    return '<blockquote class="act ' + (c.track === 'tech' ? 'tn' : '') + '"><p>' + esc(c.text) + '</p><cite>' + src + '</cite></blockquote>';
-  }
-  function stackBar(t, cls) {
-    var den = t.total || 1, seg = function (k, col) { return t[k] ? '<i style="width:' + (100 * t[k] / den) + '%;background:var(' + col + ')"></i>' : ''; };
-    return '<div class="' + (cls || 'bar') + '">' + seg('compliant', '--ok') + seg('partial', '--warn-fill') + seg('gap', '--bad') + seg('review', '--accent') + '</div>';
-  }
-
-  /* ---------- overview ---------- */
-  function overviewView() {
-    var d = D(), cust = asCust();
-    if (cust && !d.config.released) return customerHome();
-    var S = scope(), p1 = S.list.filter(function (x) { return x.comm !== 'future'; }), fut = S.list.filter(function (x) { return x.comm === 'future'; });
-    var t = tally(p1), tf = tally(fut), pct = readiness(t), assessed = t.compliant + t.partial + t.gap + t.na;
-    var h = '<div class="stack">';
-    if (!cust) h += '<div class="row"><label class="f grow" style="max-width:420px">Client<input class="in" id="client" data-bind="config::client" value="' + esc(d.config.client || '') + '" placeholder="Organisation being assessed"' + (canWrite() ? '' : ' disabled') + '></label></div>';
-    /* hero */
-    h += '<section class="card hero"><div class="score"><div class="score-n num">' + pct + '<small>%</small></div><div class="score-c">Readiness for 1 January 2027</div><div class="score-s">' + assessed + ' of ' + t.total + ' obligations assessed' + (t.prov ? '. ' + t.prov + ' provisional.' : '.') + '</div>' + stackBar(t, 'meter') + '</div>';
-    h += '<div class="spine-w"><h2>The Act, section by section</h2><div class="muted" style="font-size:13px;margin-top:2px">One mark per check. Tall marks are obligations in the Act. Short marks are technical criteria. Select a mark to open it.</div><div class="spine">';
-    L.DOMAINS.forEach(function (dm) {
-      var its = S.list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
-      h += '<div class="sg ' + (dm.future ? 'fut' : '') + '"><div class="sg-t">' + its.map(function (x) { var i = info(x.c); return '<button class="' + i.s + (x.c.track === 'tech' ? ' tech' : '') + '" data-act="open" data-id="' + x.c.id + '" title="' + esc(x.c.ref + ': ' + x.c.title + ' (' + ST[i.s] + ')') + '" aria-label="' + esc(x.c.ref + ', ' + ST[i.s]) + '"></button>'; }).join('') + '</div><div class="sg-l">' + esc(dm.refs.replace('Schedules I to IV', 'Sch. I–IV').replace('Schedule V', 'Sch. V')) + '</div></div>';
-    });
-    h += '</div><div class="legend"><span><i style="background:var(--ok)"></i>Compliant</span><span><i style="background:var(--warn-fill)"></i>Partial</span><span><i style="background:var(--bad)"></i>Gap</span><span><i style="background:var(--accent)"></i>Awaiting review</span><span><i style="background:var(--open);opacity:.55"></i>Not assessed</span><span><i style="background:var(--na)"></i>Not applicable</span></div></div></section>';
-    /* tiles */
-    var tile = function (k, col, href) { return '<a class="tile" href="#' + href + '" data-act="' + (href === 'assessment' ? 'filter' : '') + '" data-st="' + k + '"><b class="num">' + t[k] + '</b><span><i style="background:var(' + col + ')"></i>' + ST[k] + '</span></a>'; };
-    var tgt = cust ? 'gaps' : 'assessment';
-    h += '<section class="tiles">' + tile('compliant', '--ok', tgt) + tile('partial', '--warn-fill', tgt) + tile('gap', '--bad', tgt) + tile('review', '--accent', tgt) + tile('open', '--open', tgt) + '</section>';
-    /* areas + attention */
-    h += '<section class="grid2"><div class="card"><div class="card-h"><h2>By area</h2><span class="faint" style="font-size:12px">gaps and partials</span></div>';
-    L.DOMAINS.forEach(function (dm) {
-      var its = S.list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
-      var tt = tally(its);
-      h += '<a class="area" href="#' + tgt + '" data-act="' + (cust ? '' : 'filter') + '" data-dom="' + dm.id + '"><div><div class="area-n">' + esc(dm.name) + '</div><div class="area-r">' + esc(dm.refs) + (dm.future ? ' · not yet in operation' : '') + '</div></div>' + stackBar(tt) + '<div class="area-g num">' + (tt.gap + tt.partial) + ' / ' + tt.total + '</div></a>';
-    });
-    h += '</div><div class="card"><div class="card-h"><h2>Needs attention</h2>' + (gapList().length ? '<a class="more" href="#gaps">All gaps</a>' : '') + '</div>';
-    var att = [];
-    if (!cust) {
-      var un = visibleQs().filter(function (q) { return !answered(q); }).length;
-      if (un) att.push('<a class="att" href="#scope" style="text-decoration:none;color:inherit">' + ic('info') + '<div><div class="att-t">Finish the scoping profile</div><div class="att-s">' + plural(un, 'question') + ' unanswered. Unanswered questions keep every related check switched on.</div></div></a>');
-      if (t.review + tf.review) att.push('<a class="att" href="#assessment" data-act="filter" data-st="review" style="text-decoration:none;color:inherit">' + ic('doc') + '<div><div class="att-t">' + plural(t.review + tf.review, 'check') + ' awaiting your review</div><div class="att-s">Documents have arrived for these.</div></div></a>');
-    }
-    gapList().slice(0, 5).forEach(function (x) { var i = info(x.c); att.push('<button class="att" data-act="open" data-id="' + x.c.id + '"><span class="risk ' + i.risk + '">' + i.risk + '</span><div><div class="att-t">' + esc(x.c.title) + '</div><div class="att-s mono">' + esc(x.c.ref) + '</div></div></button>'); });
-    h += att.length ? att.join('') : '<div class="empty">Nothing needs attention yet. Findings appear here as the assessment progresses.</div>';
-    h += '</div></section>';
-    /* commencement */
-    var cm = { inforce: 0, rules: 0, counsel: 0, future: 0 }; S.list.forEach(function (x) { cm[x.comm]++; });
-    h += '<section class="card"><div class="card-h"><h2>What is in operation, and when</h2><a class="more" href="#method">How this is decided</a></div><div class="comm3">';
-    ['inforce', 'rules', 'counsel', 'future'].forEach(function (k) { h += '<div>' + commHTML(k, true) + '<b class="num">' + cm[k] + '</b><p>' + esc(L.COMM[k].desc) + '</p></div>'; });
-    h += '</div></section></div>';
-    return h;
-  }
-  function customerHome() {
-    var d = D(), qs = visibleQs(), qa = qs.filter(answered).length, docs = neededDocs(), dd = docs.filter(function (x) { return x.state; }).length;
-    var ql = questionList(), qd = ql.filter(function (x) { return d.responses[x.c.id] && d.responses[x.c.id].a; }).length;
-    var bar = function (a, b) { return '<div class="bar"><i style="width:' + (b ? 100 * a / b : 0) + '%;background:var(--ok)"></i></div>'; };
-    return '<div class="stack"><div><h2 style="font-size:24px">Three things we need from you</h2><p class="muted" style="margin-top:6px;max-width:65ch">Your answers decide which parts of the Personal Data Protection Act apply to you. Each document you share removes questions, so start with the profile, then documents, then whatever questions are left.</p></div>' +
-      '<div class="steps">' +
-      '<a class="card step" href="#scope"><span class="step-n">Step 1</span><h3>Tell us about your organisation</h3><p class="muted">' + qa + ' of ' + qs.length + ' answered</p>' + bar(qa, qs.length) + '</a>' +
-      '<a class="card step" href="#documents"><span class="step-n">Step 2</span><h3>Share your documents</h3><p class="muted">' + dd + ' of ' + docs.length + ' dealt with</p>' + bar(dd, docs.length) + '</a>' +
-      '<a class="card step" href="#questions"><span class="step-n">Step 3</span><h3>Answer what is left</h3><p class="muted">' + qd + ' of ' + ql.length + ' answered</p>' + bar(qd, ql.length) + '</a></div>' +
-      '<div class="note warn">' + ic('lock') + '<div><b>Keep personal data out of what you share.</b> We need policies, procedures, templates and blank forms. Remove names, identity numbers and customer records before you add a file. Files are stored on a cloud service outside Sri Lanka.</div></div>' +
-      '<div class="note">' + ic('info') + '<div>Findings, the gap register and the roadmap appear here once your consultant releases them.</div></div></div>';
-  }
-
-  /* ---------- scope ---------- */
-  function scopeView() {
-    var p = P(), qs = visibleQs(), S = scope(), ro = !canWrite(), g = '', n = 0;
-    var h = '<div class="scope"><div>';
-    qs.forEach(function (q) {
-      if (q.g !== g) { g = q.g; h += '<div class="qg">' + esc(g) + '</div>'; }
-      n++; var v = p[q.id], done = answered(q);
-      h += '<div class="q ' + (done ? 'done' : '') + '"><h3>' + n + '. ' + esc(q.text) + '</h3>' + (q.hint ? '<p class="q-hint">' + esc(q.hint) + '</p>' : '') + (q.type === 'many' ? '<p class="q-hint">Select all that apply.</p>' : '') + '<div class="opts" role="group" aria-label="' + esc(q.text) + '">';
-      q.options.forEach(function (o) {
-        var on = q.type === 'one' ? v === o.v : (v || []).indexOf(o.v) >= 0;
-        h += '<button class="opt ' + (q.type === 'many' ? 'many ' : '') + (on ? 'on' : '') + '" data-act="answer" data-q="' + q.id + '" data-v="' + o.v + '" aria-pressed="' + on + '"' + (ro ? ' disabled' : '') + '><span class="opt-m"></span><span>' + esc(o.label) + (o.hint ? '<small>' + esc(o.hint) + '</small>' : '') + '</span></button>';
-      });
-      h += '</div><div class="q-ref">' + esc(q.ref) + '</div></div>';
-    });
-    h += '</div><aside class="side">';
-    var legal = S.list.filter(function (x) { return x.c.track === 'legal'; }).length, tech = S.list.length - legal;
-    h += '<div class="card inscope"><b class="num">' + S.list.length + '</b> <span>of ' + C.length + ' checks apply</span><div class="muted" style="font-size:13px;margin-top:8px">' + legal + ' obligations in the Act and ' + tech + ' technical criteria. ' + (qs.length - qs.filter(answered).length ? 'Unanswered questions keep their checks switched on.' : 'The profile is complete.') + '</div>';
-    if (consultant()) h += '<label class="sw" style="margin-top:14px"><input type="checkbox" id="fut" data-bind="config::includeFuture"' + (D().config.includeFuture !== false ? ' checked' : '') + (ro ? ' disabled' : '') + '><span><b>Include future readiness</b><br><span class="muted">Part II rights and Part IV solicited messages, which are not yet in operation.</span></span></label>';
-    h += '</div><div class="card"><h3>What the answers mean</h3><div style="margin-top:6px">';
-    L.determinations(p).forEach(function (dt) { h += '<div class="det ' + dt.tone + '"><div class="det-h"><b>' + esc(dt.title) + '</b><span class="ref">' + esc(dt.ref) + '</span></div><p>' + esc(dt.text) + '</p></div>'; });
-    h += '</div></div>';
-    var sig = registerSignals();
-    if (sig.length) h += '<div class="note warn">' + ic('warn') + '<div><b>The processing register disagrees with the profile.</b><br>' + sig.map(esc).join('<br>') + '</div></div>';
-    h += '</aside></div>';
-    return h;
-  }
-
-  /* ---------- documents ---------- */
-  function fileRow(docId, f, i) {
-    var link = f.id ? '<a href="/_blob/' + esc(f.id) + '" target="_blank" rel="noopener">' + esc(f.name) + '</a>' : '<span class="fn">' + esc(f.name) + '</span>';
-    return '<div class="file">' + ic('doc') + link + '<span class="faint">' + (f.listed ? 'Name recorded. File not stored. ' : '') + fmtSize(f.size) + ' · ' + fmtDate(f.at) + '</span>' + (canWrite() ? '<button class="btn ghost sm" data-act="rmfile" data-doc="' + docId + '" data-i="' + i + '" aria-label="Remove ' + esc(f.name) + '">' + ic('x') + '</button>' : '') + '</div>';
-  }
-  function documentsView() {
-    var docs = neededDocs(), d = D(), ro = !canWrite(), dealt = docs.filter(function (x) { return x.state; }).length;
-    var h = '<div class="stack"><div class="row"><div class="grow"><b style="font-size:15px">' + dealt + ' of ' + docs.length + ' dealt with</b><div class="bar" style="max-width:320px;margin-top:6px"><i style="width:' + (docs.length ? 100 * dealt / docs.length : 0) + '%;background:var(--ok)"></i></div></div><span class="muted" style="font-size:13px;max-width:44ch">Add the file, or say you do not have it. Saying so records a gap straight away and removes the related questions.</span></div>';
-    h += '<div class="note warn">' + ic('lock') + '<div><b>Share documents, not personal data.</b> Policies, procedures, templates and blank forms are what is needed. Remove names, identity numbers and records about individuals first. Files are stored on a cloud service outside Sri Lanka, so a file that contains personal data would itself be a cross-border data flow under section 26.</div></div>';
-    var groups = [['gov', 'Governance and legal'], ['tech', 'Technical'], ['future', 'Future readiness']];
-    groups.forEach(function (g) {
-      var its = docs.filter(function (x) { return x.d.g === g[0]; }); if (!its.length) return;
-      h += '<div class="dgroup">' + g[1] + '</div>';
-      its.forEach(function (x) {
-        var id = x.d.id, e = d.evidence[id] || { files: [] }, st = x.state, refs = [];
-        x.feeds.forEach(function (c) { if (refs.indexOf(c.ref) < 0) refs.push(c.ref); });
-        var acts = Object.keys(d.activities || {}).length;
-        h += '<div class="doc ' + st + '"><div><h3>' + esc(x.d.name) + (st === 'provided' ? ' <span class="flag ok">' + ic('check') + 'Provided</span>' : st === 'none' ? ' <span class="flag bad">Not held</span>' : st === 'na' ? ' <span class="tag">Not applicable</span>' : '') + '</h3><p>' + esc(x.d.desc) + '</p>';
-        h += '<div class="feeds">Answers ' + plural(x.feeds.length, 'check') + ': ' + refs.slice(0, 4).map(function (r) { return '<span class="tag">' + esc(r) + '</span>'; }).join('') + (refs.length > 4 ? ' +' + (refs.length - 4) + ' more' : '') + '</div>';
-        if (id === 'ropa' && acts) h += '<div class="files"><div class="file">' + ic('check') + '<span class="fn">Built in the Processing register: ' + plural(acts, 'activity', 'activities') + '</span><a class="faint" href="#register">Open</a></div></div>';
-        if (e.files && e.files.length) h += '<div class="files">' + e.files.map(function (f, i) { return fileRow(id, f, i); }).join('') + '</div>';
-        if (st === 'none' || st === 'na' || e.note) h += '<label class="f" style="margin-top:10px;max-width:520px">Note<input class="in" id="note-' + id + '" data-bind="evidence:' + id + ':note" value="' + esc(e.note || '') + '" placeholder="Optional. For example, when it will be ready."' + (ro ? ' disabled' : '') + '></label>';
-        h += '</div><div class="doc-a">';
-        if (!ro) {
-          h += '<label class="btn pri">' + ic('up') + 'Add files<input type="file" class="sr" data-file="' + id + '" multiple accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp"></label>';
-          h += '<button class="btn ' + (st === 'none' ? 'on-none' : '') + '" data-act="docst" data-id="' + id + '" data-v="none" aria-pressed="' + (st === 'none') + '">We do not have this</button>';
-          h += '<button class="btn ' + (st === 'na' ? 'on-na' : '') + '" data-act="docst" data-id="' + id + '" data-v="na" aria-pressed="' + (st === 'na') + '">Does not apply to us</button>';
-        }
-        if (consultant() && DOC_CHECKS[id]) h += '<button class="btn" data-act="check" data-doc="' + id + '">' + ic('spark') + 'Check against the Act</button>';
-        h += '</div></div>';
-      });
-    });
-    if (!docs.length) h += '<div class="card empty"><h3>No documents needed yet</h3>Answer the scoping profile first.</div>';
-    return h + '</div>';
-  }
-
-  /* ---------- questions ---------- */
-  function questionsView() {
-    var d = D(), S = scope(), list = questionList(), ro = !canWrite(), removed = S.list.length - list.length;
-    var done = list.filter(function (x) { return d.responses[x.c.id] && d.responses[x.c.id].a; }).length;
-    var show = ui.qf === 'todo' ? list.filter(function (x) { return !(d.responses[x.c.id] && d.responses[x.c.id].a); }) : list;
-    var h = '<div class="stack"><div class="row"><div class="grow"><b style="font-size:15px">' + done + ' of ' + list.length + ' answered</b><div class="bar" style="max-width:320px;margin-top:6px"><i style="width:' + (list.length ? 100 * done / list.length : 0) + '%;background:var(--ok)"></i></div></div><div class="chips"><button class="chip ' + (ui.qf ? '' : 'on') + '" data-act="qf" data-v="">All</button><button class="chip ' + (ui.qf === 'todo' ? 'on' : '') + '" data-act="qf" data-v="todo">Unanswered</button></div></div>';
-    h += '<div class="note">' + ic('info') + '<div>' + (removed ? '<b>' + plural(removed, 'question') + ' already removed</b> by the documents you have dealt with. ' : '') + 'Each document you add or mark as not held removes more. An answer of "Yes" with no document counts as partial until a consultant sees evidence.</div></div>';
-    [['legal', 'Compliance and legal'], ['it', 'IT and security']].forEach(function (g) {
-      var its = show.filter(function (x) { return x.c.aud === g[0]; }); if (!its.length) return;
-      h += '<div class="dgroup">' + g[1] + ' · ' + its.length + '</div>';
-      its.forEach(function (x) {
-        var c = x.c, r = d.responses[c.id] || {};
-        h += '<div class="qa"><div><div class="ref" style="white-space:normal">' + esc(c.ref) + '</div><div style="margin-top:6px">' + commHTML(x.comm, true) + '</div></div><div><h3>' + esc(c.q) + '</h3><div class="ans" role="group" aria-label="Answer">' +
-          ANS.map(function (a) { return '<button class="' + (r.a === a[0] ? 'on' : '') + '" data-act="resp" data-id="' + c.id + '" data-v="' + a[0] + '" aria-pressed="' + (r.a === a[0]) + '"' + (ro ? ' disabled' : '') + '>' + a[1] + '</button>'; }).join('') + '</div>';
-        if (r.a) h += '<input class="in" style="margin-top:10px;max-width:560px" id="rn-' + c.id + '" data-bind="responses:' + c.id + ':note" value="' + esc(r.note || '') + '" placeholder="Add a note (optional)"' + (ro ? ' disabled' : '') + '>';
-        h += '<details><summary>What the Act says</summary><div style="margin-top:10px">' + actHTML(c) + '</div></details></div></div>';
-      });
-    });
-    if (!show.length) h += '<div class="card empty"><h3>' + (list.length ? 'All answered' : 'No questions left') + '</h3>' + (list.length ? 'Switch to All to review your answers.' : 'The documents you shared cover everything in scope.') + '</div>';
-    return h + '</div>';
-  }
-
-  /* ---------- assessment ---------- */
-  function filtered() {
-    var f = ui.f, q = f.q.trim().toLowerCase();
-    return scope().list.filter(function (x) {
-      var c = x.c;
-      if (f.dom && c.dom !== f.dom) return false;
-      if (f.track && c.track !== f.track) return false;
-      if (f.comm && x.comm !== f.comm) return false;
-      if (f.st && info(c).s !== f.st) return false;
-      if (q && (c.ref + ' ' + c.title + ' ' + c.text).toLowerCase().indexOf(q) < 0) return false;
-      return true;
-    });
-  }
-  function assessmentView() {
-    var f = ui.f, list = filtered(), S = scope();
-    if (ui.sel && !S.map[ui.sel]) ui.sel = null;
-    var h = '<div class="view split"><div class="filters"><div class="search">' + ic('search') + '<input class="in" id="fq" data-filter="q" value="' + esc(f.q) + '" placeholder="Search section or text" aria-label="Search checks"></div>';
-    h += '<select class="in" id="fdom" data-filter="dom" aria-label="Area"><option value="">All areas</option>' + L.DOMAINS.map(function (d) { return '<option value="' + d.id + '"' + (f.dom === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select>';
-    h += '<select class="in" id="fcomm" data-filter="comm" aria-label="Commencement"><option value="">Any commencement</option>' + Object.keys(L.COMM).map(function (k) { return '<option value="' + k + '"' + (f.comm === k ? ' selected' : '') + '>' + L.COMM[k].short + '</option>'; }).join('') + '</select>';
-    h += '<div class="chips" role="group" aria-label="Track">' + [['', 'All'], ['legal', 'Act'], ['tech', 'Technical']].map(function (t) { return '<button class="chip ' + (f.track === t[0] ? 'on' : '') + '" data-act="ftrack" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
-    h += '<div class="chips" role="group" aria-label="Status">' + [['', 'Any status'], ['review', 'Awaiting review'], ['open', 'Not assessed'], ['gap', 'Gap'], ['partial', 'Partial'], ['compliant', 'Compliant']].map(function (t) { return '<button class="chip ' + (f.st === t[0] ? 'on' : '') + '" data-act="fst" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
-    h += '<span class="faint num" style="margin-left:auto;font-size:12px">' + list.length + ' of ' + S.list.length + '</span></div>';
-    h += '<div class="md ' + (ui.sel ? 'has-sel' : '') + '"><div class="list" id="list">';
-    L.DOMAINS.forEach(function (dm) {
-      var its = list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
-      h += '<div class="lg"><b>' + esc(dm.name) + '</b><span>' + esc(dm.refs) + '</span></div>';
-      its.forEach(function (x) { var i = info(x.c); h += '<button class="li ' + (ui.sel === x.c.id ? 'on' : '') + '" data-act="sel" data-id="' + x.c.id + '"><span class="ref">' + esc(x.c.ref) + '</span><span><span class="li-t">' + esc(x.c.title) + '</span><span class="li-m">' + pill(i.s, i.prov && i.s !== 'review') + (i.risk ? '<span class="risk ' + i.risk + '">' + i.risk + '</span>' : '') + (x.c.track === 'tech' ? '<span class="tag">Technical</span>' : '') + '</span></span></button>'; });
-    });
-    if (!list.length) h += '<div class="empty"><h3>No checks match</h3>Clear a filter to see more.</div>';
-    h += '</div><div class="detail" id="detail">' + (ui.sel ? detailHTML(S.map[ui.sel], true) : '<div class="empty" style="margin-top:80px"><h3>Select a check</h3>The text of the Act, the evidence and your finding appear here.</div>') + '</div></div></div>';
-    return h;
-  }
-  function detailHTML(x, edit) {
-    var c = x.c, d = D(), i = info(c), f = d.findings[c.id] || {}, dm = DM[c.dom], ro = !canWrite() || !edit, r = d.responses[c.id];
-    var h = '<div class="detail-in"><div class="d-h">' + (edit ? '<button class="btn ghost sm back" data-act="sel" data-id="">' + ic('back') + 'All checks</button> ' : '') + '<span class="ref">' + esc(c.ref) + '</span> <span class="faint" style="font-size:12px">· ' + esc(dm.name) + '</span><h2>' + esc(c.title) + '</h2><div class="d-m">' + pill(i.s, i.prov && i.s !== 'review') + (i.risk ? '<span class="risk ' + i.risk + '">' + i.risk + ' risk</span>' : '') + commHTML(x.comm) + (c.track === 'tech' ? '<span class="tag">' + esc(L.TDOMS[c.tdom]) + '</span>' : '') + '</div></div>';
-    h += '<div class="sec"><h4>' + (c.track === 'tech' ? 'Assessment criterion' : 'The Act says') + '</h4>' + actHTML(c) + (c.note ? '<div class="note" style="margin-top:12px">' + ic('info') + '<div>' + esc(c.note) + '</div></div>' : '') + (x.comm !== 'inforce' ? '<div class="note" style="margin-top:8px">' + ic('info') + '<div>' + esc(L.COMM[x.comm].desc) + '</div></div>' : '') + '</div>';
-    h += '<div class="sec"><h4>Why it applies</h4><p>' + esc(x.why) + '</p></div>';
-    h += '<div class="sec"><h4>Evidence we look for</h4><p>' + esc(c.look) + '</p><div class="evl" style="margin-top:10px">';
-    (c.ev || []).forEach(function (id) {
-      var st = docState(id), e = d.evidence[id] || {}, files = e.files || [];
-      h += '<div class="evi">' + ic('doc') + '<b>' + esc(DOCM[id].name) + '</b>' + (st === 'provided' ? '<span class="flag ok">Provided</span>' : st === 'none' ? '<span class="flag bad">Not held</span>' : st === 'na' ? '<span class="tag">Marked not applicable</span>' : '<span class="tag">Not yet received</span>') +
-        files.map(function (fl) { return fl.id ? '<a href="/_blob/' + esc(fl.id) + '" target="_blank" rel="noopener">' + esc(fl.name) + '</a>' : '<span class="muted">' + esc(fl.name) + '</span>'; }).join(' ') + (e.note ? '<span class="muted">' + esc(e.note) + '</span>' : '') +
-        (edit && consultant() && DOC_CHECKS[id] && DOC_CHECKS[id](c) ? '<button class="btn sm" style="margin-left:auto" data-act="check" data-doc="' + id + '">' + ic('spark') + 'Check document</button>' : '') + '</div>';
-    });
-    h += '</div></div>';
-    if (!asCust()) h += '<div class="sec"><h4>What the organisation said</h4>' + (r && r.a ? '<p><b>' + ANSM[r.a] + '</b>' + (r.note ? '. ' + esc(r.note) : '') + '</p>' : '<p class="muted">No answer yet to: ' + esc(c.q) + '</p>') + '</div>';
-    if (asCust()) {
-      h += '<div class="sec"><h4>Finding</h4>' + (i.obs ? '<p>' + esc(i.obs) + '</p>' : '<p class="muted">No observation recorded.</p>') + (i.rec ? '<p style="margin-top:8px"><b>Recommended action.</b> ' + esc(i.rec) + '</p>' : '') + (i.phase ? '<p class="muted" style="margin-top:8px">Start within ' + PHM[i.phase] + (i.owner ? '. Owner: ' + esc(i.owner) : '') + '.</p>' : '') + '</div>';
-      return h + '</div>';
-    }
-    /* finding editor */
-    h += '<div class="sec"><h4>Finding</h4><div class="find">';
-    if (i.prov && i.why) h += '<div class="note">' + ic('info') + '<div><b>Provisional: ' + ST[i.s].toLowerCase() + '.</b> ' + esc(i.why) + ' Set a status below to confirm or change it.</div></div>';
-    h += '<div class="st-seg" role="group" aria-label="Status">' + ['compliant', 'partial', 'gap', 'na'].map(function (s) { return '<button class="' + (f.status === s ? 'on ' : '') + s + '" data-act="setst" data-id="' + c.id + '" data-v="' + s + '" aria-pressed="' + (f.status === s) + '"' + (ro ? ' disabled' : '') + '>' + ST[s] + '</button>'; }).join('') + '</div>';
-    h += '<label class="f">Observation<textarea class="in" id="obs-' + c.id + '" data-bind="findings:' + c.id + ':obs" placeholder="What was reviewed and what was found"' + (ro ? ' disabled' : '') + '>' + esc(f.obs || '') + '</textarea></label>';
-    h += '<label class="f">Recommendation<textarea class="in" id="rec-' + c.id + '" data-bind="findings:' + c.id + ':rec" placeholder="' + esc(c.fix) + '"' + (ro ? ' disabled' : '') + '>' + esc(f.rec || '') + '</textarea></label>';
-    if (!f.rec) h += '<div class="muted" style="font-size:12px;margin-top:-8px">Left blank, the report uses the suggested action shown in grey.</div>';
-    if (i.rk) {
-      var rk = i.rk;
-      h += '<div class="f3"><label class="f">Risk rating<select class="in" id="risk-' + c.id + '" data-bind="findings:' + c.id + ':risk"' + (ro ? ' disabled' : '') + '><option value="">Calculated: ' + rk.auto + '</option>' + ['High', 'Medium', 'Low'].map(function (v) { return '<option' + (f.risk === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></label>';
-      h += '<label class="f">Start within<select class="in" id="ph-' + c.id + '" data-bind="findings:' + c.id + ':phase"' + (ro ? ' disabled' : '') + '><option value="">Suggested: ' + PHM[autoPhase(x.comm, rk.rating)] + '</option>' + PH.map(function (p) { return '<option value="' + p[0] + '"' + (f.phase === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') + '</select></label>';
-      h += '<label class="f">Owner<input class="in" id="own-' + c.id + '" data-bind="findings:' + c.id + ':owner" value="' + esc(f.owner || '') + '" placeholder="Role or team"' + (ro ? ' disabled' : '') + '></label></div>';
-      h += '<div class="muted" style="font-size:12px">Calculated rating: obligation weight ' + ['', 'Low', 'Medium', 'High'][rk.base] + '. Exposure ' + rk.exp + ' of 4 (individuals ' + rk.scale + ', special categories ' + rk.special + ', programme weakness ' + rk.dp + ')' + (rk.exp >= 3 ? ', so raised one level' : '') + '.' + (rk.partial ? ' Partial, so lowered one level.' : '') + ' <a href="#method">How ratings work</a></div>';
-    }
-    var rv = f.reviewedAt, nm = nameOf(f.reviewedBy);
-    h += '<div class="row" style="border-top:1px solid var(--line);padding-top:12px"><div class="grow muted" style="font-size:13px">' + (rv ? ic('check') + ' Reviewed ' + fmtDate(rv) + (nm ? ' by ' + esc(nm) : '') : 'Not yet signed off') + '</div>' + (ro ? '' : '<button class="btn ' + (rv ? '' : 'pri') + '" data-act="signoff" data-id="' + c.id + '"' + (f.status ? '' : ' disabled title="Set a status first"') + '>' + (rv ? 'Remove sign-off' : 'Sign off finding') + '</button>') + '</div>';
-    h += '</div></div></div>';
-    return h;
-  }
-
-  /* ---------- processing register ---------- */
-  function registerView() {
-    var d = D(), ids = Object.keys(d.activities || {}), ro = !canWrite();
-    var h = '<div class="stack"><div class="row"><p class="muted grow" style="max-width:70ch">List each activity that uses personal data. The register becomes your record of processing under section 12(1)(a), and each row is checked against sections 5, 6, 9 and 26 as you fill it in.</p>' + (ro ? '' : '<button class="btn pri" data-act="act-new">' + ic('plus') + 'Add activity</button>') + (ids.length ? '<button class="btn" data-act="export" data-what="register">' + ic('down') + 'Export CSV</button>' : '') + '</div>';
-    if (!ids.length) return h + '<div class="card empty"><h3>No activities yet</h3>Start with the obvious ones: payroll, customer onboarding, marketing, CCTV.</div></div>';
-    h += '<div class="tw"><table class="t"><thead><tr><th>Activity</th><th>Lawful basis</th><th>Cross-border</th><th>Retention</th><th>Checks</th></tr></thead><tbody>';
-    ids.forEach(function (id) {
-      var a = d.activities[id], fl = actFlags(a);
-      h += '<tr class="click" data-act="act-edit" data-id="' + id + '" tabindex="0"><td><div class="tt">' + esc(a.name || 'Untitled activity') + '</div><div class="ts">' + esc(a.purpose || '') + '</div></td><td>' + (a.basis ? esc(L.S1[a.basis]) : '<span class="faint">Not set</span>') + (a.special === 'y' ? '<div class="ts">' + (a.basis2 ? esc(L.S2[a.basis2]) : 'Special categories') + '</div>' : '') + '</td><td>' + (a.xb === 'y' ? esc(a.xbCountry || 'Yes') + (a.xbGround ? '<div class="ts">' + esc(L.S26[a.xbGround]) + '</div>' : '') : a.xb === 'n' ? 'No' : '<span class="faint">Not set</span>') + '</td><td>' + (a.retention ? esc(a.retention) : '<span class="faint">Not set</span>') + '</td><td>' + (fl.length ? fl.map(function (x) { return '<span class="flag ' + x[0] + '" title="' + esc(x[2]) + '">' + esc(x[1]) + '</span>'; }).join('') : '<span class="flag ok">' + ic('check') + 'Complete</span>') + '</td></tr>';
-    });
-    return h + '</tbody></table></div></div>';
-  }
-  function activityDrawer(dr) {
-    var a = dr.draft, ro = !canWrite();
-    function inp(k, label, ph) { return '<label class="f">' + label + '<input class="in" id="ad-' + k + '" data-draft="' + k + '" value="' + esc(a[k] || '') + '" placeholder="' + esc(ph || '') + '"' + (ro ? ' disabled' : '') + '></label>'; }
-    function sel(k, label, opts, emptyLabel) { return '<label class="f">' + label + '<select class="in" id="ad-' + k + '" data-draft="' + k + '"' + (ro ? ' disabled' : '') + '><option value="">' + (emptyLabel || 'Select') + '</option>' + opts.map(function (o) { return '<option value="' + o[0] + '"' + (a[k] === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></label>'; }
-    var kv = function (m) { return Object.keys(m).map(function (k) { return [k, m[k]]; }); }, yn = [['y', 'Yes'], ['n', 'No']];
-    var h = '<div class="dr-h"><h2 class="grow">' + (dr.id ? 'Edit activity' : 'Add activity') + '</h2><button class="btn ghost" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">';
-    h += inp('name', 'Activity', 'For example: customer onboarding') + inp('purpose', 'Purpose (s.6)', 'Why the data is processed') + '<div class="f2">' + inp('subjects', 'Whose data', 'Customers, employees') + inp('data', 'Categories of personal data', 'Identity, contact, financial') + '</div>';
-    h += '<div class="f2">' + sel('basis', 'Lawful basis (s.5(a))', kv(L.S1)) + sel('special', 'Special categories used?', yn) + '</div>';
-    if (a.special === 'y') h += sel('basis2', 'Schedule II condition (s.5(b))', kv(L.S2));
-    if (a.basis === 'f') h += sel('lia', 'Legitimate interests assessment recorded?', yn);
-    h += '<div class="f2">' + sel('source', 'Where the data comes from', [['direct', 'From the data subject'], ['indirect', 'From another source']]) + inp('recipients', 'Recipients and processors', 'Who receives the data') + '</div>';
-    h += '<div class="f2">' + sel('xb', 'Moves out of Sri Lanka?', yn) + (a.xb === 'y' ? inp('xbCountry', 'Country', 'For example: Singapore') : '<div></div>') + '</div>';
-    if (a.xb === 'y') h += sel('xbGround', 'Section 26 ground or instrument', kv(L.S26), 'Not yet identified');
-    h += inp('retention', 'Retention period (s.9)', 'A period, or the criteria for setting it');
-    var fl = actFlags(a);
-    h += '<div>' + (fl.length ? fl.map(function (x) { return '<span class="flag ' + x[0] + '">' + esc(x[1]) + ' <span class="mono">' + esc(x[2]) + '</span></span>'; }).join('') : '<span class="flag ok">' + ic('check') + 'No open checks on this activity</span>') + '</div>';
-    h += '</div><div class="dr-f">' + (dr.id && !ro ? '<button class="btn danger" style="margin-right:auto" data-act="act-del" data-id="' + dr.id + '">' + ic('trash') + 'Delete</button>' : '') + '<button class="btn" data-act="close">Cancel</button>' + (ro ? '' : '<button class="btn pri" data-act="act-save">Save activity</button>') + '</div>';
-    return h;
-  }
-
-  /* ---------- gaps and roadmap ---------- */
-  function gapsView() {
-    var all = gapList(), list = ui.gf ? all.filter(function (x) { return info(x.c).risk === ui.gf; }) : all, cnt = { High: 0, Medium: 0, Low: 0 };
-    all.forEach(function (x) { cnt[info(x.c).risk]++; });
-    var h = '<div class="stack"><div class="row"><div class="chips" role="group" aria-label="Risk">' + [['', 'All ' + all.length], ['High', 'High ' + cnt.High], ['Medium', 'Medium ' + cnt.Medium], ['Low', 'Low ' + cnt.Low]].map(function (t) { return '<button class="chip ' + (ui.gf === t[0] ? 'on' : '') + '" data-act="gf" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div><span class="grow"></span>' + (all.length ? '<button class="btn" data-act="export" data-what="gaps">' + ic('down') + 'Export CSV</button>' : '') + '</div>';
-    if (!list.length) return h + '<div class="card empty"><h3>No gaps recorded' + (ui.gf ? ' at this rating' : '') + '</h3>Gaps and partial findings appear here as the assessment progresses.</div></div>';
-    h += '<div class="tw"><table class="t"><thead><tr><th>Section</th><th>Finding</th><th>Status</th><th>Risk</th><th>Commencement</th><th>Start within</th><th>Owner</th></tr></thead><tbody>';
-    list.forEach(function (x) {
-      var c = x.c, i = info(c);
-      h += '<tr class="click" data-act="open" data-id="' + c.id + '" tabindex="0"><td><span class="ref">' + esc(c.ref) + '</span></td><td><div class="tt">' + esc(c.title) + '</div><div class="ts">' + esc(i.obs || i.why || '') + '</div></td><td>' + pill(i.s, i.prov) + '</td><td><span class="risk ' + i.risk + '">' + i.risk + '</span></td><td>' + commHTML(x.comm, true) + '</td><td>' + (PHM[i.phase] || '') + '</td><td>' + esc(i.owner || '') + '</td></tr>';
-    });
-    return h + '</tbody></table></div></div>';
-  }
-  function roadmapView() {
-    var all = gapList(), ro = !canWrite() || asCust();
-    if (!all.length) return '<div class="card empty"><h3>Nothing to schedule yet</h3>The roadmap fills as gaps and partial findings are recorded.</div>';
-    var h = '<div class="stack"><p class="muted" style="max-width:75ch">Each action starts in the phase its risk rating suggests. Obligations not yet in operation start in the last phase. ' + (ro ? '' : 'Move an action by changing its phase.') + '</p><div class="road">';
-    PH.forEach(function (p) {
-      var its = all.filter(function (x) { return info(x.c).phase === p[0]; });
-      h += '<div class="col"><div class="col-h"><b>' + p[1] + '</b><span>' + its.length + '</span></div>';
-      its.forEach(function (x) {
-        var c = x.c, i = info(c);
-        h += '<div class="rc"><div class="rc-h"><button class="ref" data-act="open" data-id="' + c.id + '" style="text-decoration:underline">' + esc(c.ref) + '</button><span class="risk ' + i.risk + '">' + i.risk + '</span></div><p>' + esc(i.rec || c.fix) + '</p><div class="rc-f">' + (i.owner ? '<span>' + esc(i.owner) + '</span>' : '') + (x.comm === 'rules' ? '<span class="tag">Finalise when rules are made</span>' : '') +
-          (ro ? '' : '<select data-phase="' + c.id + '" aria-label="Phase for ' + esc(c.ref) + '">' + PH.map(function (q) { return '<option value="' + q[0] + '"' + (i.phase === q[0] ? ' selected' : '') + '>' + q[1] + '</option>'; }).join('') + '</select>') + '</div></div>';
-      });
-      if (!its.length) h += '<div class="faint" style="font-size:13px;padding:8px 4px">No actions</div>';
-      h += '</div>';
-    });
-    return h + '</div></div>';
-  }
-
   /* ---------- report ---------- */
   function ratingMethodHTML() {
     return '<p>The Act does not define risk ratings. This rating is TechNeura\'s own method. Its factors follow matters the Authority must consider under section 39 when setting a penalty: the nature and gravity of the contravention and the number of data subjects (s.39(a)), the effectiveness of the Data Protection Management Programme (s.39(c)) and the categories of personal data affected (s.39(e)). Section 39 is in Part VII, which Gazette No. 2498/16 does not bring into operation.</p>' +
@@ -730,54 +344,6 @@
     var css = 'body{font:14px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#0E1B22;max-width:920px;margin:40px auto;padding:0 24px}h1{font-size:32px;line-height:1.1;margin:0}h2{font-size:20px;margin:34px 0 12px;padding-top:16px;border-top:2px solid #0E1B22}h3{font-size:15px;margin:22px 0 8px}p{margin:8px 0;max-width:72ch}.rmeta{margin-top:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;font-size:13px}.rmeta b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#74838A}table{width:100%;border-collapse:collapse;font-size:12.5px;margin:8px 0}th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:#74838A;border-bottom:1px solid #0E1B22;padding:6px 8px 6px 0}td{border-bottom:1px solid #D7DEDC;padding:7px 8px 7px 0;vertical-align:top}ul{padding-left:18px;max-width:72ch}li{margin:5px 0}.small{font-size:12px;color:#44535B}@media print{body{margin:0}h2{break-after:avoid}tr{break-inside:avoid}}';
     return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>PDPA Readiness Assessment' + (D().config.client ? ' - ' + esc(D().config.client) : '') + '</title><style>' + css + '</style></head><body>' + reportHTML() + '</body></html>';
   }
-  function reportView() {
-    var d = D(), ro = !canWrite(), h = '<div class="stack">';
-    if (consultant()) {
-      var prov = tally(scope().list).prov;
-      h += '<div class="card"><div class="row"><div class="grow"><h2>' + (d.config.released ? 'Released to the customer on ' + fmtDate(d.config.releasedAt) : 'Not yet released to the customer') + '</h2><p class="muted" style="margin-top:4px;max-width:70ch">' + (d.config.released ? 'The customer sees the findings as they stood at release. Release again to send your later changes.' : 'Until you release, the customer sees only the profile, documents, questions and register.') + '</p></div>' +
-        (ro ? '' : '<button class="btn pri" data-act="release">' + ic('send') + (d.config.released ? 'Release again' : 'Release findings') + '</button>' + (d.config.released ? '<button class="btn" data-act="unrelease">Withdraw</button>' : '')) + '</div>' +
-        (prov ? '<div class="note warn" style="margin-top:12px">' + ic('warn') + '<div>' + plural(prov, 'finding') + ' still provisional. They will be shown to the customer as provisional.</div></div>' : '') +
-        '<label class="f" style="margin-top:14px">Consultant\'s summary, added to section 1<textarea class="in" id="summary" data-bind="config::summary" placeholder="Optional. Your own words on overall readiness, the main risks and the decisions needed from leadership."' + (ro ? ' disabled' : '') + '>' + esc(d.config.summary || '') + '</textarea></label></div>';
-    }
-    h += '<div class="row"><span class="grow muted" style="font-size:13px">The downloaded report opens in a browser, where it prints to PDF, and in Word.</span><button class="btn pri" data-act="export" data-what="report">' + ic('down') + 'Download report</button><button class="btn" data-act="export" data-what="gaps">' + ic('down') + 'Gap register CSV</button>' + (consultant() ? '<button class="btn" data-act="export" data-what="backup">' + ic('down') + 'Workspace backup</button>' : '') + '</div>';
-    h += '<article class="report" id="report">' + reportHTML() + '</article></div>';
-    return h;
-  }
-
-  /* ---------- method ---------- */
-  function methodView() {
-    var h = '<div class="stack" style="max-width:920px">';
-    h += '<div class="card"><h2>What is in operation</h2><p class="muted" style="margin:6px 0 12px;max-width:72ch">Extraordinary Gazette No. 2498/16 appoints 1 January 2027 for sections 2 and 3, Part I and Part III of the Act. Every check carries one of four labels.</p>' + Object.keys(L.COMM).map(function (k) { return '<div class="det"><div class="det-h">' + commHTML(k) + '</div><p>' + esc(L.COMM[k].desc) + '</p></div>'; }).join('') + '</div>';
-    h += '<div class="card"><h2>How a status is reached</h2><div class="report" style="border:0;padding:0;max-width:none"><p>The tool proposes a provisional status from what the organisation supplies. A consultant confirms or changes it. Only a consultant can mark a check compliant.</p><table><thead><tr><th>What the organisation did</th><th>Provisional status</th></tr></thead><tbody><tr><td>Added a document that evidences the check</td><td>Awaiting review</td></tr><tr><td>Said it does not hold any document that would evidence the check</td><td>Gap</td></tr><tr><td>Answered "Yes, in place" with no document</td><td>Partial. Section 12(1)(a) requires catalogued records that demonstrate compliance.</td></tr><tr><td>Answered "Partly"</td><td>Partial</td></tr><tr><td>Answered "No"</td><td>Gap</td></tr><tr><td>Nothing yet, or "Don\'t know"</td><td>Not assessed</td></tr></tbody></table></div></div>';
-    h += '<div class="card"><h2>How risk is rated</h2><div class="report" style="border:0;padding:0;max-width:none">' + ratingMethodHTML() + '</div></div>';
-    h += '<div class="card"><h2>Document checks</h2><p style="max-width:72ch;margin-top:6px">A consultant can ask Claude to compare a privacy notice, consent wording, processor agreement, Data Protection Officer terms or breach procedure with the relevant items of the Act. Three safeguards apply.</p><ul style="max-width:72ch;padding-left:18px"><li>Email addresses, phone numbers, NIC numbers and long digit strings are masked in the browser before anything is sent. Names and addresses are not detected, so the consultant reads the masked text and confirms it first.</li><li>Every passage Claude quotes is searched for in the document. A quote that cannot be found is flagged and is never accepted in bulk.</li><li>A result changes nothing until a consultant accepts it.</li></ul><div class="note warn" style="margin-top:10px">' + ic('lock') + '<div>Claude and this workspace run on cloud services outside Sri Lanka. Sending or storing text that contains personal data would be a cross-border data flow under section 26, with TechNeura acting as a processor under section 22. Use policies, templates and masked text only, and have legal counsel confirm the position in the engagement terms.</div></div></div>';
-    h += '<div class="card"><h2>Who sees what</h2><div class="report" style="border:0;padding:0;max-width:none"><table><thead><tr><th>Person</th><th>Sees and does</th></tr></thead><tbody><tr><td>Consultant: the workspace owner and editors in TechNeura\'s organisation</td><td>Everything. Records findings, signs them off and releases them.</td></tr><tr><td>Customer: contributors, and anyone invited from outside TechNeura</td><td>Scoping profile, documents, questions and the processing register. Findings, the gap register, the roadmap and the report appear once a consultant releases them.</td></tr><tr><td>Viewer</td><td>Reads what a customer can read. Changes nothing.</td></tr></tbody></table></div></div>';
-    h += '<div class="card"><h2>Points for legal counsel</h2><ul style="max-width:72ch;padding-left:18px">' + L.COUNSEL_POINTS.map(function (s) { return '<li style="margin:6px 0">' + esc(s) + '</li>'; }).join('') + '</ul></div>';
-    h += '<div class="card"><h2>Sources</h2><p class="muted" style="margin-top:4px">Library verified ' + L.VERIFIED + '.</p>' + L.SOURCES.map(function (s) { return '<div class="det"><div class="det-h"><b>' + (s.u ? '<a href="' + s.u + '" target="_blank" rel="noopener">' + esc(s.t) + '</a>' : esc(s.t)) + '</b></div><p>' + esc(s.n) + '</p></div>'; }).join('') + '</div>';
-    h += '<div class="card"><div class="card-h"><h2>Control library</h2><span class="faint" style="font-size:12px">' + C.length + ' checks. Statutory text is quoted from the Acts.</span></div>';
-    L.DOMAINS.forEach(function (dm) {
-      var its = C.filter(function (c) { return c.dom === dm.id; });
-      h += '<details style="border-top:1px solid var(--line);padding:10px 0"><summary style="cursor:pointer;font-weight:600">' + esc(dm.name) + ' <span class="ref">' + esc(dm.refs) + ' · ' + its.length + '</span></summary><div class="stack" style="margin-top:14px;gap:16px">' + its.map(function (c) { return '<div><div class="row" style="gap:8px;margin-bottom:6px"><span class="ref">' + esc(c.ref) + '</span><b>' + esc(c.title) + '</b>' + (c.track === 'tech' ? '<span class="tag">Technical</span>' : '') + '</div>' + actHTML(c) + '</div>'; }).join('') + '</div></details>';
-    });
-    return h + '</div></div>';
-  }
-
-  /* ---------- drawers and dialog ---------- */
-  function drawerHTML() {
-    var dr = ui.drawer; if (!dr) return '';
-    var inner = dr.type === 'activity' ? activityDrawer(dr) : dr.type === 'check' ? checkDrawer(dr) : controlDrawer(dr);
-    return '<div class="scrim"><div class="drawer ' + (dr.type === 'activity' ? '' : 'wide') + '" role="dialog" aria-modal="true">' + inner + '</div></div>';
-  }
-  function controlDrawer(dr) {
-    var x = scope().map[dr.id];
-    return '<div class="dr-h"><h2 class="grow">Check detail</h2><button class="btn ghost" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">' + detailHTML(x, false) + '</div>';
-  }
-  function dialogHTML() {
-    var d = ui.dialog; if (!d) return '';
-    if (d.type === 'tour') return '<div class="scrim center"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">Take a tour</h2><p class="muted">Each tour walks through the workspace on example data for a fictional company. Nothing is saved, and your own work is back when the tour ends.</p><button class="tour-pick" data-act="tour-pick" data-v="consultant"><b>Consultant tour</b><span>' + TOURS.consultant.length + ' stops. Scoping, evidence, findings, the gap register, the roadmap and the report.</span></button><button class="tour-pick" data-act="tour-pick" data-v="customer"><b>Customer tour</b><span>' + TOURS.customer.length + ' stops. What the customer is asked for, and what they see after release.</span></button><div class="row" style="justify-content:flex-end"><button class="btn" data-act="dlg-no">Not now</button></div></div></div>';
-    return '<div class="scrim center"><div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">' + esc(d.title) + '</h2><p class="muted">' + esc(d.text) + '</p><div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" data-act="dlg-no">Cancel</button><button class="btn pri" data-act="dlg-yes">' + esc(d.ok) + '</button></div></div></div>';
-  }
-
   /* ---------- document check ---------- */
   function checkItems(doc) { var fn = DOC_CHECKS[doc]; return scope().list.filter(function (x) { return fn(x.c); }); }
   function maskText(text) {
@@ -788,27 +354,6 @@
   }
   function normQ(s) { return String(s || '').toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim(); }
   function quoteFound(text, quote) { var q = normQ(quote).replace(/^["'.…\s]+|["'.…\s]+$/g, ''); return q.length >= 8 && normQ(text).indexOf(q) >= 0; }
-  function checkDrawer(dr) {
-    var items = checkItems(dr.doc), doc = DOCM[dr.doc], m = dr.text ? maskText(dr.text) : null, files = ((D().evidence[dr.doc] || {}).files || []).filter(function (f) { return f.id && /\.(pdf|txt|md)$/i.test(f.name); });
-    var h = '<div class="dr-h">' + ic('spark') + '<h2 class="grow">Check ' + esc(doc.name.toLowerCase()) + ' against the Act</h2><button class="btn ghost" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">';
-    if (!ui.sample && !ui.tour) h += '<div class="note warn">' + ic('warn') + '<div>Document checks are not available in this view. Open the workspace in Claude while signed in, or review the document by hand in the Assessment section.</div></div>';
-    h += '<div class="sec"><h4>1. Document text</h4><div class="row" style="margin-bottom:8px"><label class="btn">' + ic('up') + 'Read a file<input type="file" class="sr" data-read="1" accept=".pdf,.docx,.txt,.md"></label>' + files.map(function (f) { return '<button class="btn" data-act="readasset" data-id="' + esc(f.id) + '" data-name="' + esc(f.name) + '">' + ic('doc') + esc(f.name) + '</button>'; }).join('') + (dr.busy ? '<span class="muted">Reading the file</span>' : '') + '</div><textarea class="in" id="chk-text" data-check="text" style="min-height:120px" placeholder="Or paste the text of the document here">' + esc(dr.text || '') + '</textarea>' + (dr.source ? '<div class="faint" style="font-size:12px;margin-top:4px">Source: ' + esc(dr.source) + (dr.cut ? '. Only the first 150,000 characters are used.' : '') + '</div>' : '') + '</div>';
-    h += '<div class="sec"><h4>2. What will be sent</h4>' + (m ? '<div class="masked" tabindex="0">' + esc(m.text.slice(0, 6000)).replace(/\[(email|NIC|phone|number)\]/g, '<mark>[$1]</mark>') + (m.text.length > 6000 ? '\n…' : '') + '</div><div class="muted" style="font-size:13px;margin-top:6px">' + plural(m.n, 'value') + ' masked. Names and addresses are not detected automatically. Read the text before you send it.</div><label class="sw" style="margin-top:10px"><input type="checkbox" id="chk-ok" data-check="ok"' + (dr.ok ? ' checked' : '') + '><span>I have read this text. It contains no personal data other than what is masked, and I am content to send it to Claude, which runs outside Sri Lanka.</span></label>' : '<p class="muted">Add the document text to see the masked version.</p>') + '</div>';
-    h += '<div class="sec"><h4>3. Compare with ' + plural(items.length, 'item') + ' of the Act</h4><div class="row"><button class="btn pri" data-act="runcheck"' + (m && dr.ok && ui.sample && !dr.running ? '' : ' disabled') + '>' + ic('spark') + (dr.running ? 'Checking. This can take a minute.' : dr.results ? 'Run again' : 'Run the check') + '</button>' + (dr.running ? '<button class="btn" data-act="stopcheck">Stop</button>' : '') + (dr.err ? '<span style="color:var(--bad)">' + esc(dr.err) + '</span>' : '') + '</div></div>';
-    if (dr.results) {
-      var ver = dr.results.filter(function (r) { return r.result !== 'not_found' && r.verified && !r.accepted; }).length;
-      h += '<div class="sec"><h4>4. Results to review</h4><div class="note" style="margin-bottom:10px">' + ic('info') + '<div>These are suggestions. Nothing changes until you accept a result. "Not found" may also mean the text was not read correctly, so open the document before accepting a gap.</div></div>' + (ver ? '<div class="row" style="margin-bottom:10px"><button class="btn" data-act="acceptall">Accept ' + plural(ver, 'result') + ' with verified quotes</button></div>' : '') + '<div class="stack" style="gap:8px">';
-      dr.results.forEach(function (r, idx) {
-        var c = CM[r.id]; if (!c) return;
-        var sug = r.result === 'met' ? 'compliant' : r.result === 'partial' ? 'partial' : 'gap';
-        h += '<div class="res"><div class="res-h"><span class="ref">' + esc(c.ref) + '</span><b class="grow">' + esc(c.title) + '</b><span class="pill ' + sug + '">' + (r.result === 'met' ? 'Found' : r.result === 'partial' ? 'Partly found' : 'Not found') + '</span></div>';
-        if (r.quote) h += '<blockquote>' + esc(r.quote) + '</blockquote><div style="font-size:12px">' + (r.verified ? '<span class="flag ok">' + ic('check') + 'Quote found in the document</span>' : '<span class="flag bad">' + ic('warn') + 'Quote not found in the document. Check by hand.</span>') + '</div>';
-        h += '<div class="muted" style="font-size:13px">' + esc(r.reason || '') + '</div><div class="row">' + (r.accepted ? '<span class="flag ok">' + ic('check') + 'Recorded as ' + ST[r.accepted].toLowerCase() + '</span>' : ['compliant', 'partial', 'gap'].map(function (s) { return '<button class="btn sm ' + (s === sug ? 'pri' : '') + '" data-act="accept" data-i="' + idx + '" data-v="' + s + '">Record as ' + ST[s].toLowerCase() + '</button>'; }).join('')) + '</div></div>';
-      });
-      h += '</div></div>';
-    }
-    return h + '</div>';
-  }
   function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = function () { rej(new Error('load')); }; document.head.appendChild(s); }); }
   function pdfText(buf) {
     var ready = window.pdfjsLib ? Promise.resolve() : loadScript(PDFJS).then(function () { return loadScript(PDFW); });
@@ -882,6 +427,14 @@
   function csv(rows) { return rows.map(function (r) { return r.map(function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n'); }
   function saveFile(filename, data) {
     if (ui.downloads) { ui.downloads.save({ filename: filename, data: data }).then(function () { toast('Saved ' + filename + '.'); }, function (e) { if (!e || e.code !== 'declined') toast('The file could not be saved here.', 'bad'); }); return; }
+    if (!window.claude) {
+      try {
+        var type = /\.html$/.test(filename) ? 'text/html' : /\.csv$/.test(filename) ? 'text/csv' : 'application/json';
+        var url = URL.createObjectURL(new Blob([data], { type: type + ';charset=utf-8' })), a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000); toast('Downloaded ' + filename + '.'); return;
+      } catch (e) { /* fall through to copying */ }
+    }
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(data).then(function () { toast('Downloads are not available in this view. The content was copied instead: paste it into a file named ' + filename + '.'); }, function () { toast('Downloads are not available in this view.', 'bad'); });
     else toast('Downloads are not available in this view.', 'bad');
   }
@@ -911,38 +464,499 @@
     chain.then(function () { save('config'); toast(on ? 'Findings released to the customer.' : 'Release withdrawn.'); render(); }, function () { toast('The release did not complete. Check your access and try again.', 'bad'); render(); });
   }
 
+  /* ---------- render plumbing ---------- */
+  ui.tab = { evidence: 'documents', results: 'gaps' }; ui.qid = null;
+  var ROUTES = { home: ['home'], overview: ['home'], scope: ['scope'], evidence: ['evidence', 'documents'], documents: ['evidence', 'documents'], questions: ['evidence', 'questions'], activities: ['evidence', 'activities'], register: ['evidence', 'activities'], review: ['review'], assessment: ['review'], results: ['results', 'gaps'], gaps: ['results', 'gaps'], roadmap: ['results', 'roadmap'], report: ['results', 'report'], method: ['method'] };
+  function curHash() { return (location.hash || '').replace('#', ''); }
+  function route() { var r = ROUTES[curHash()] || ['home']; ui.view = r[0]; if (r[1]) ui.tab[r[0]] = r[1]; }
+  function go(h) { if (curHash() === h) { route(); render(); } else location.hash = h; }
+  function editing() { var a = document.activeElement; return a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'checkbox' && a.type !== 'file')); }
+  var renderPending = false, rendering = false;
+  function softRender() { if (editing()) { renderPending = true; return; } render(); }
+  function render() {
+    if (rendering) { renderPending = true; return; }
+    rendering = true;
+    try { renderNow(); } finally { rendering = false; }
+    if (renderPending && !editing()) { renderPending = false; rendering = true; try { renderNow(); } finally { rendering = false; } }
+  }
+  function renderNow() {
+    touch(); renderPending = false;
+    var root = document.getElementById('app'), keep = {}, ids = ['view', 'list', 'detail', 'drb'];
+    ids.forEach(function (id) { var el = document.getElementById(id); if (el) keep[id] = el.scrollTop; });
+    var a = document.activeElement, focusSel = null;
+    if (a && a.id) focusSel = '#' + a.id;
+    else if (a && a.dataset && a.dataset.act) focusSel = Object.keys(a.dataset).map(function (k) { return '[data-' + k.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); }) + '="' + String(a.dataset[k]).replace(/"/g, '\\"') + '"]'; }).join('');
+    root.innerHTML = shell();
+    var key = ui.view + '/' + (ui.tab[ui.view] || '') + '/' + (ui.view === 'scope' ? ui.qid : '');
+    if (key !== ui.lastView) { delete keep.view; delete keep.list; delete keep.detail; }
+    if (ui.sel !== ui.lastSel) delete keep.detail;
+    ui.lastView = key; ui.lastSel = ui.sel;
+    ids.forEach(function (id) { var el = document.getElementById(id); if (el && keep[id]) el.scrollTop = keep[id]; });
+    if (focusSel) { try { var f = root.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); } catch (e) { /* selector not valid */ } }
+    if (ui.tour) positionTour();
+  }
+  function toast(msg, kind) {
+    var t = { id: uid(), msg: msg, kind: kind || '' }; ui.toasts.push(t);
+    var box = document.getElementById('toasts'); if (box) box.innerHTML = toastsHTML(true);
+    setTimeout(function () { ui.toasts = ui.toasts.filter(function (x) { return x !== t; }); var b = document.getElementById('toasts'); if (b) b.innerHTML = toastsHTML(true); }, kind === 'bad' ? 7000 : 3500);
+  }
+  function toastsHTML(inner) { var h = ui.toasts.map(function (t) { return '<div class="toast ' + t.kind + '" role="status">' + esc(t.msg) + '</div>'; }).join(''); return inner ? h : '<div class="toasts" id="toasts">' + h + '</div>'; }
+  function ask(title, text, ok, fn) { ui.dialog = { title: title, text: text, ok: ok }; dialogFn = fn; render(); }
+
+  /* ---------- small parts ---------- */
+  function daysLeft() { return Math.ceil((GO_LIVE.getTime() - Date.now()) / 86400000); }
+  function saveHTML() {
+    if (ui.example) return '<i class="dot off"></i><span>Example data</span>';
+    if (ui.saveErr) return '<i class="dot err"></i>' + esc(ui.saveErr);
+    if (ui.readonly) return '<i class="dot off"></i><span>View only</span>';
+    if (ui.mode === 'local') return '<i class="dot busy"></i><span title="Download a workspace backup from the Report tab to keep a copy.">Saved in this browser only</span>';
+    if (pending.size) return '<i class="dot busy"></i><span>Saving</span>';
+    return '<i class="dot"></i><span>Saved' + (ui.slow ? '. May be out of date.' : '') + '</span>';
+  }
+  function stHTML(s, prov) { return '<span class="st ' + s + '"' + (prov ? ' title="Not yet reviewed by a consultant"' : '') + '>' + ST[s] + (prov ? ' <em>(provisional)</em>' : '') + '</span>'; }
+  function riskHTML(r) { return '<span class="risk ' + r + '" title="' + r + ' risk"><i></i><i></i><i></i><b>' + r + '</b></span>'; }
+  function commHTML(k, short) { return '<span class="comm ' + k + '" title="' + esc(L.COMM[k].desc) + '"><i></i>' + (short ? L.COMM[k].short : L.COMM[k].label) + '</span>'; }
+  function actHTML(c) {
+    var tech = c.track === 'tech';
+    var src = tech ? 'TechNeura assessment criterion. ' + (c.basis || '') : L.ACT + ', ' + c.ref + (c.amended ? ', as amended by Act No. 22 of 2025' : '');
+    return '<figure class="act' + (tech ? ' tn' : '') + '"><blockquote>' + esc(c.text) + '</blockquote><figcaption>' + esc(src) + '</figcaption></figure>';
+  }
+  function stackBar(t) {
+    var den = t.total || 1, seg = function (k, col) { return t[k] ? '<i style="width:' + (100 * t[k] / den) + '%;background:var(' + col + ')"></i>' : ''; };
+    return '<div class="sbar">' + seg('compliant', '--ok') + seg('partial', '--part-fill') + seg('gap', '--gap') + seg('review', '--pen') + '</div>';
+  }
+  function progBar(a, b) { return '<div class="sbar"><i style="width:' + (b ? 100 * a / b : 0) + '%;background:var(--ink)"></i></div>'; }
+  function tabsHTML(view, items) {
+    return '<nav class="tabs" aria-label="Sections">' + items.map(function (it) { var on = ui.tab[view] === it[0]; return '<a class="tab ' + (on ? 'on' : '') + '" href="#' + it[0] + '"' + (on ? ' aria-current="page"' : '') + '><span>' + it[1] + '</span>' + (it[2] ? '<span class="tab-c">' + it[2] + '</span>' : '') + '</a>'; }).join('') + '</nav>';
+  }
+  function respDone(x) { var r = D().responses[x.c.id]; return !!(r && r.a); }
+
+  /* ---------- frame ---------- */
+  function stageList() {
+    var d = D(), cust = asCust(), rel = !!d.config.released, S = scope(), out = [];
+    var qs = visibleQs(), qa = qs.filter(answered).length;
+    out.push({ id: 'scope', href: 'scope', t: cust ? 'About you' : 'Scope', s: qa === qs.length ? 'Profile complete' : (qs.length - qa) + ' of ' + qs.length + ' questions left', done: qa === qs.length });
+    var docs = neededDocs(), dl = docs.filter(function (x) { return !x.state; }).length, ql = questionList(), qleft = ql.filter(function (x) { return !respDone(x); }).length;
+    out.push({ id: 'evidence', href: ui.tab.evidence, t: 'Evidence', s: dl + qleft ? plural(dl, 'document') + ' and ' + plural(qleft, 'question') + ' left' : 'Everything is in', done: !(dl + qleft) });
+    if (!cust) {
+      var t = tally(S.list), left = t.review + t.open;
+      out.push({ id: 'review', href: 'review', t: 'Review', s: t.review ? t.review + ' waiting for you' : left ? left + ' still to assess' : 'All ' + t.total + ' assessed', done: !left });
+    }
+    var g = (!cust || rel) ? gapList().length : 0;
+    out.push({ id: 'results', href: ui.tab.results, t: 'Results', off: cust && !rel, done: rel, s: cust ? (rel ? plural(g, 'finding') + ' to act on' : 'After your consultant\'s review') : plural(g, 'gap') + (rel ? ', released' : ', not released') });
+    return out;
+  }
+  function stagesHTML() {
+    return '<nav class="stages" aria-label="Stages">' + stageList().map(function (s, i) {
+      var inner = '<span class="stage-n ' + (s.done ? 'done' : '') + '">' + (s.done ? ic('check') : i + 1) + '</span><span class="stage-t">' + s.t + '</span><span class="stage-s">' + esc(s.s) + '</span>';
+      if (s.off) return '<span class="stage off">' + inner + '</span>';
+      return '<a class="stage ' + (ui.view === s.id ? 'on' : '') + '" href="#' + s.href + '"' + (ui.view === s.id ? ' aria-current="step"' : '') + '>' + inner + '</a>';
+    }).join('') + '</nav>';
+  }
+  function barHTML() {
+    var d = D(), dl = daysLeft(), client = d.config.client || '';
+    var h = '<header class="bar"><a class="logo" href="#home" aria-label="PDPA Readiness, overview"><b>PDPA</b><span>Readiness</span></a>';
+    if (client) h += '<span class="client">' + esc(client) + '</span>';
+    h += '<span class="bar-sp"></span><span class="tminus">' + (dl > 0 ? '<b>' + dl + '</b> days to 1 January 2027' : 'In operation since 1 January 2027') + '</span>';
+    if (ui.role === 'consultant') h += '<span class="role" role="group" aria-label="View as"><button data-act="as" data-v="0" class="' + (ui.asCustomer ? '' : 'on') + '">Consultant</button><button data-act="as" data-v="1" class="' + (ui.asCustomer ? 'on' : '') + '">Customer view</button></span>';
+    h += '<a class="lnk ov" href="#home">Overview</a>' + (ui.tour ? '' : '<button class="lnk" data-act="tour">Take a tour</button>') + '<a class="lnk hw" href="#method">How it works</a>';
+    return h + '<span class="save" id="save">' + saveHTML() + '</span></header>';
+  }
+  function bannerHTML() {
+    if (ui.tour) return '<div class="xb"><span><b>Guided tour.</b> Everything shown is example data for a fictional company. Nothing is saved.</span></div>';
+    if (!ui.example) return '';
+    return '<div class="xb"><span><b>Example data</b> for a fictional company. Look around freely. Nothing is saved.</span><span class="sp"></span>' + (canWrite() ? '<button class="btn pri sm" data-act="start">Start a real engagement</button>' : '') + '</div>';
+  }
+  function shell() {
+    if (ui.mode === 'loading') return '<div class="load"><div>Opening the workspace</div></div>';
+    var cust = asCust(), rel = !!D().config.released;
+    if (cust && ui.view === 'review') ui.view = 'home';
+    if (cust && !rel && ui.view === 'results') ui.view = 'home';
+    var body = ui.view === 'review' ? reviewView() : '<main class="view" id="view">' + ({ home: homeView, scope: scopeView, evidence: evidenceView, results: resultsView, method: methodView }[ui.view])() + '</main>';
+    return '<div class="app">' + bannerHTML() + barHTML() + stagesHTML() + body + drawerHTML() + dialogHTML() + toastsHTML() + tourHTML() + '</div>';
+  }
+
+  /* ---------- home ---------- */
+  function nextStep() {
+    var d = D(), cust = asCust(), rel = !!d.config.released;
+    var un = visibleQs().filter(function (q) { return !answered(q); }).length;
+    var docs = neededDocs().filter(function (x) { return !x.state; }).length;
+    var ql = questionList().filter(function (x) { return !respDone(x); }).length;
+    if (cust) {
+      if (rel) { var g = gapList().length; return g ? { t: 'See what needs action', s: plural(g, 'finding') + ' with a recommended action.', href: 'gaps' } : { t: 'Read your report', s: 'No gaps were recorded.', href: 'report' }; }
+      if (un) return { t: 'Tell us about your organisation', s: plural(un, 'question') + ' left. Most take one click.', href: 'scope' };
+      if (docs) return { t: 'Share your documents', s: plural(docs, 'document') + ' to add or mark as not held.', href: 'documents' };
+      if (ql) return { t: 'Answer the remaining questions', s: plural(ql, 'question') + ' your documents did not cover.', href: 'questions' };
+      return { t: 'Nothing more is needed from you', s: 'Your consultant is reviewing what you sent.', href: '' };
+    }
+    var t = tally(scope().list);
+    if (un) return { t: 'Finish scoping', s: plural(un, 'question') + ' left. Unanswered questions keep their checks switched on.', href: 'scope' };
+    if (t.review) return { t: 'Review new evidence', s: plural(t.review, 'check') + ' with documents waiting for review.', href: 'review', st: 'review' };
+    if (docs + ql) return { t: 'Collect the remaining evidence', s: plural(docs, 'document') + ' and ' + plural(ql, 'question') + ' outstanding.', href: 'documents' };
+    if (t.open) return { t: 'Assess the remaining checks', s: plural(t.open, 'check') + ' not assessed yet.', href: 'review', st: 'open' };
+    if (!rel) return { t: 'Release the findings', s: 'The customer sees nothing until you release.', href: 'report' };
+    return { t: 'Download the report', s: 'Findings were released on ' + fmtDate(d.config.releasedAt) + '.', href: 'report' };
+  }
+  function ctaHTML(n) {
+    if (!n.href) return '<div class="cta idle"><b>' + esc(n.t) + '</b><span>' + esc(n.s) + '</span></div>';
+    return '<a class="cta" href="#' + n.href + '"' + (n.st ? ' data-act="filter" data-st="' + n.st + '"' : '') + '><small>Next step</small><b>' + esc(n.t) + '</b><span>' + esc(n.s) + '</span></a>';
+  }
+  function stripHTML(S) {
+    var h = '<div class="strip">';
+    L.DOMAINS.forEach(function (dm) {
+      var its = S.list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
+      h += '<div class="sg ' + (dm.future ? 'fut' : '') + '"><div class="sg-t">' + its.map(function (x) { var i = info(x.c); return '<button class="' + i.s + (x.c.track === 'tech' ? ' tech' : '') + '" data-act="open" data-id="' + x.c.id + '" title="' + esc(x.c.ref + ': ' + x.c.title + ' (' + ST[i.s] + ')') + '" aria-label="' + esc(x.c.ref + ', ' + ST[i.s]) + '"></button>'; }).join('') + '</div><div class="sg-l">' + esc(dm.refs.replace('Schedules I to IV', 'Sch. I to IV').replace('Schedule V', 'Sch. V')) + '</div></div>';
+    });
+    return h + '</div>';
+  }
+  function homeView() {
+    var d = D(), cust = asCust();
+    if (cust && !d.config.released) return customerHome();
+    var S = scope(), p1 = S.list.filter(function (x) { return x.comm !== 'future'; }), t = tally(p1), ta = tally(S.list), pct = readiness(t), assessed = t.compliant + t.partial + t.gap + t.na, tgt = cust ? 'gaps' : 'review';
+    var h = '<div class="page">';
+    if (!cust && canWrite()) h += '<input class="title-in" id="client" data-bind="config::client" value="' + esc(d.config.client || '') + '" placeholder="Name the organisation being assessed" aria-label="Client name">';
+    h += '<div class="top"><div class="grow"><h1 class="headline">' + pct + '% ready for 1 January 2027</h1><p class="lede">' + assessed + ' of the ' + t.total + ' checks that come into operation that day are assessed' + (t.prov ? ', ' + t.prov + ' of them provisionally' : '') + '. A partial finding counts as half.</p></div>' + ctaHTML(nextStep()) + '</div>';
+    var ct = function (k, col, label) { return '<a class="ct" href="#' + tgt + '"' + (cust ? '' : ' data-act="filter" data-st="' + k + '"') + '><i style="background:var(' + col + ')"></i><b>' + ta[k] + '</b>' + label + '</a>'; };
+    h += '<section class="sheet hero"><div class="sh">The Act, check by check <small>Tall marks are obligations in the Act, short marks are technical criteria. Select one to open it.</small></div>' + stripHTML(S) + '<div class="cts">' + ct('compliant', '--ok', 'compliant') + ct('partial', '--part-fill', 'partial') + ct('gap', '--gap', 'gaps') + ct('review', '--pen', 'awaiting review') + ct('open', '--idle', 'not assessed') + '</div></section>';
+    h += '<div class="two"><section class="sheet"><div class="sh">By area <small>gaps and partials of all checks</small></div>';
+    L.DOMAINS.forEach(function (dm) {
+      var its = S.list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
+      var tt = tally(its);
+      h += '<a class="area" href="#' + tgt + '"' + (cust ? '' : ' data-act="filter" data-dom="' + dm.id + '"') + '><div><div class="area-n">' + esc(dm.name) + '</div><div class="area-r">' + esc(dm.refs) + (dm.future ? ', not yet in operation' : '') + '</div></div>' + stackBar(tt) + '<div class="area-g">' + (tt.gap + tt.partial) + ' / ' + tt.total + '</div></a>';
+    });
+    h += '</section><section class="sheet"><div class="sh">Highest risks' + (gapList().length ? '<a href="#gaps">All gaps</a>' : '') + '</div>';
+    var top = gapList().slice(0, 6);
+    h += top.length ? top.map(function (x) { var i = info(x.c); return '<button class="att" data-act="open" data-id="' + x.c.id + '">' + riskHTML(i.risk) + '<span><span class="att-t">' + esc(x.c.title) + '</span><br><span class="ref">' + esc(x.c.ref) + '</span></span></button>'; }).join('') : '<div class="empty">No gaps recorded yet. They appear here as the assessment moves on.</div>';
+    h += '</section></div>';
+    var cm = { inforce: 0, rules: 0, counsel: 0, future: 0 }; S.list.forEach(function (x) { cm[x.comm]++; });
+    h += '<section class="sheet"><div class="sh">What is in operation, and when <a href="#method">How this is decided</a></div><div class="comm4">' + ['inforce', 'rules', 'counsel', 'future'].map(function (k) { return '<div>' + commHTML(k, true) + '<b>' + cm[k] + '</b><p>' + esc(L.COMM[k].desc) + '</p></div>'; }).join('') + '</div></section>';
+    return h + '</div>';
+  }
+  function customerHome() {
+    var qs = visibleQs(), qa = qs.filter(answered).length, docs = neededDocs(), dd = docs.filter(function (x) { return x.state; }).length, ql = questionList(), qd = ql.filter(respDone).length;
+    var row = function (n, href, t, p, a, b) { var done = b > 0 && a === b; return '<a class="step-row" href="#' + href + '"><span class="stage-n ' + (done ? 'done' : '') + '">' + (done ? ic('check') : n) + '</span><div><h3>' + t + '</h3><p>' + p + '</p></div>' + progBar(a, b) + '<span class="muted num">' + a + ' of ' + b + '</span></a>'; };
+    return '<div class="page narrow"><div class="top"><div class="grow"><h1 class="headline long">Three steps to your readiness assessment</h1><p class="lede">Your answers decide which parts of the Personal Data Protection Act apply to you. Every document you share removes questions, so work from the top.</p></div>' + ctaHTML(nextStep()) + '</div>' +
+      '<section class="sheet steps3">' + row(1, 'scope', 'Tell us about your organisation', 'One question at a time. Most take one click.', qa, qs.length) + row(2, 'documents', 'Share your documents', 'Add each one, or say you do not have it.', dd, docs.length) + row(3, 'questions', 'Answer what is left', 'Only what your documents did not cover.', qd, ql.length) + '</section>' +
+      '<div class="note warn pd-note">' + ic('lock') + '<div><b>Keep personal data out of what you share.</b> We need policies, procedures, templates and blank forms. Remove names, identity numbers and customer records first. Files are stored on a cloud service outside Sri Lanka.</div></div>' +
+      '<div class="note">' + ic('info') + '<div>Your findings, the roadmap and the report appear under Results once your consultant releases them.</div></div></div>';
+  }
+
+  /* ---------- scope ---------- */
+  var QSHORT = { entity: 'Type of organisation', nexus: 'Link to Sri Lanka', role: 'Role', group: 'Group', scale: 'Number of individuals', special: 'Special categories', bases: 'Lawful bases', criminv: 'Criminal investigations', indirect: 'Indirect collection', dpia: 'Evaluation and monitoring', natsec: 'National security', coremon: 'Monitoring as a core activity', corespecial: 'Special categories as a core activity', adm: 'Automated decisions', marketing: 'Promotional messages', archive: 'Archiving and research', processors: 'Processors', joint: 'Joint controllers', subproc: 'Sub-processors', xborder: 'Cross-border flows', dpohas: 'Data Protection Officer' };
+  var advT = null;
+  function qStep(n) {
+    var qs = visibleQs(), ids = qs.map(function (q) { return q.id; }), i = ui.qid === 'sum' ? ids.length : ids.indexOf(ui.qid), j = i + n;
+    if (j < 0) return; ui.qid = j >= ids.length ? 'sum' : ids[j]; render();
+  }
+  function scopeView() {
+    var p = P(), qs = visibleQs(), S = scope(), ro = !canWrite(), un = qs.filter(function (q) { return !answered(q); });
+    if (!ui.qid || (ui.qid !== 'sum' && !qs.some(function (q) { return q.id === ui.qid; }))) ui.qid = un.length ? un[0].id : 'sum';
+    var h = '<div class="wiz"><nav class="qi" aria-label="Questions">', g = '';
+    qs.forEach(function (q) {
+      if (q.g !== g) { g = q.g; h += '<div class="qi-g">' + esc(g) + '</div>'; }
+      var done = answered(q);
+      h += '<button class="' + (ui.qid === q.id ? 'on ' : '') + (done ? 'done' : '') + '" data-act="q-go" data-id="' + q.id + '" title="' + esc(QSHORT[q.id]) + '"><i>' + (done ? ic('check') : '') + '</i><span>' + esc(QSHORT[q.id]) + '</span></button>';
+    });
+    h += '<div class="qi-g">Result</div><button class="' + (ui.qid === 'sum' ? 'on' : '') + '" data-act="q-go" data-id="sum" title="What this means"><i></i><span>What this means</span></button></nav>';
+    var legal = S.list.filter(function (x) { return x.c.track === 'legal'; }).length, tech = S.list.length - legal;
+    if (ui.qid === 'sum') {
+      h += '<div class="wq"><div class="wq-k">Scoping result</div><h1 class="wq-t">' + S.list.length + ' of ' + C.length + ' checks apply</h1><p class="wq-h">' + legal + ' obligations in the Act and ' + tech + ' technical criteria. ' + (un.length ? plural(un.length, 'question') + ' still unanswered, so the related checks stay switched on.' : 'The profile is complete.') + '</p><div style="margin-top:18px">';
+      L.determinations(p).forEach(function (dt) { h += '<div class="det ' + dt.tone + '"><div><b>' + esc(dt.title) + '</b><span class="ref">' + esc(dt.ref) + '</span></div><p>' + esc(dt.text) + '</p></div>'; });
+      h += '</div>';
+      var sig = registerSignals();
+      if (sig.length) h += '<div class="note warn" style="margin-top:14px">' + ic('warn') + '<div><b>The activities list disagrees with these answers.</b><br>' + sig.map(esc).join('<br>') + '</div></div>';
+      if (consultant()) h += '<label class="sw" style="margin-top:18px"><input type="checkbox" id="fut" data-bind="config::includeFuture"' + (D().config.includeFuture !== false ? ' checked' : '') + (ro ? ' disabled' : '') + '><span><b>Include future readiness</b><br><span class="muted">Part II rights and Part IV solicited messages, which are not yet in operation.</span></span></label>';
+      h += '<div class="wq-nav"><button class="btn" data-act="q-back">Back</button><span class="sp"></span>' + (un.length ? '<button class="btn" data-act="q-go" data-id="' + un[0].id + '">Answer the rest</button>' : '') + '<a class="btn pri lg" href="#documents">Continue to evidence</a></div></div>';
+    } else {
+      var q = qs.filter(function (z) { return z.id === ui.qid; })[0], n = qs.indexOf(q), v = p[q.id], done = answered(q);
+      h += '<div class="wq"><div class="wq-k">Question ' + (n + 1) + ' of ' + qs.length + '</div><h1 class="wq-t">' + esc(q.text) + '</h1>' + (q.hint ? '<p class="wq-h">' + esc(q.hint) + '</p>' : '') + (q.type === 'many' ? '<p class="wq-h">Select all that apply.</p>' : '') + '<div class="choices" role="group" aria-label="' + esc(q.text) + '">';
+      q.options.forEach(function (o) {
+        var on = q.type === 'one' ? v === o.v : (v || []).indexOf(o.v) >= 0;
+        h += '<button class="choice ' + (q.type === 'many' ? 'many ' : '') + (on ? 'on' : '') + '" data-act="answer" data-q="' + q.id + '" data-v="' + o.v + '" aria-pressed="' + on + '"' + (ro ? ' disabled' : '') + '><span class="ch-m"></span><span>' + esc(o.label) + (o.hint ? '<small>' + esc(o.hint) + '</small>' : '') + '</span></button>';
+      });
+      h += '</div><div class="wq-ref">Why we ask: ' + esc(q.ref) + '</div><div class="wq-nav">' + (n > 0 ? '<button class="btn" data-act="q-back">Back</button>' : '') + '<span class="sp"></span><button class="btn ' + (done ? 'pri' : '') + '" data-act="q-next">' + (n === qs.length - 1 ? 'See what this means' : done ? 'Next' : 'Skip for now') + '</button></div></div>';
+    }
+    h += '<aside class="count"><b class="num">' + S.list.length + '</b><span>checks apply so far</span><p>Out of ' + C.length + '. Each answer switches checks on or off, so you are only asked about what applies.</p></aside></div>';
+    return h;
+  }
+
+  /* ---------- evidence ---------- */
+  function evidenceView() {
+    var docs = neededDocs(), dl = docs.filter(function (x) { return !x.state; }).length, ql = questionList(), qleft = ql.filter(function (x) { return !respDone(x); }).length, acts = Object.keys(D().activities || {}).length;
+    var h = '<div class="page">' + tabsHTML('evidence', [['documents', 'Documents', dl ? dl + ' left' : 'done'], ['questions', 'Questions', qleft ? qleft + ' left' : 'done'], ['activities', 'Activities', acts ? String(acts) : '']]);
+    return h + ({ documents: documentsTab, questions: questionsTab, activities: activitiesTab }[ui.tab.evidence])() + '</div>';
+  }
+  function fileRow(docId, f, i) {
+    var link = f.id ? '<a href="/_blob/' + esc(f.id) + '" target="_blank" rel="noopener">' + esc(f.name) + '</a>' : '<span class="fn">' + esc(f.name) + '</span>';
+    return '<div class="file">' + ic('doc') + link + '<span class="faint">' + (f.listed ? 'Name recorded, file not stored. ' : '') + fmtSize(f.size) + ', ' + fmtDate(f.at) + '</span>' + (canWrite() ? '<button class="btn quiet sm" data-act="rmfile" data-doc="' + docId + '" data-i="' + i + '" aria-label="Remove ' + esc(f.name) + '">' + ic('x') + '</button>' : '') + '</div>';
+  }
+  function documentsTab() {
+    var docs = neededDocs(), d = D(), ro = !canWrite(), dealt = docs.filter(function (x) { return x.state; }).length;
+    var h = '<div class="prog"><b>' + dealt + ' of ' + docs.length + ' dealt with</b>' + progBar(dealt, docs.length) + '<span class="muted">Add the file, or say you do not have it. Either answer removes questions.</span></div>';
+    h += '<div class="note warn pd-note">' + ic('lock') + '<div><details><summary>Share documents, not personal data.</summary><p>Policies, procedures, templates and blank forms are what is needed. Remove names, identity numbers and records about individuals first. Files are stored on a cloud service outside Sri Lanka, so a file that contains personal data would itself be a cross-border data flow under section 26.</p></details></div></div>';
+    [['gov', 'Governance and legal'], ['tech', 'Technical'], ['future', 'Future readiness']].forEach(function (g) {
+      var its = docs.filter(function (x) { return x.d.g === g[0]; }); if (!its.length) return;
+      h += '<div class="dgroup">' + g[1] + '</div><section class="sheet docs">';
+      its.forEach(function (x) {
+        var id = x.d.id, e = d.evidence[id] || { files: [] }, st = x.state, refs = [], acts = Object.keys(d.activities || {}).length;
+        x.feeds.forEach(function (c) { if (refs.indexOf(c.ref) < 0) refs.push(c.ref); });
+        h += '<div class="doc ' + st + '"><div><h3>' + esc(x.d.name) + (st === 'provided' ? '<span class="flag ok">' + ic('check') + 'Provided</span>' : st === 'none' ? '<span class="flag bad">Not held</span>' : st === 'na' ? '<span class="tag">Does not apply</span>' : '') + '</h3><p>' + esc(x.d.desc) + '</p>';
+        h += '<div class="feeds">Answers ' + plural(x.feeds.length, 'check') + ': ' + esc(refs.slice(0, 4).join(', ')) + (refs.length > 4 ? ' and ' + (refs.length - 4) + ' more' : '') + '</div>';
+        if (id === 'ropa' && acts) h += '<div class="files"><div class="file">' + ic('check') + '<span class="fn">Built from your activities list: ' + plural(acts, 'activity', 'activities') + '</span><a class="faint" href="#activities">Open</a></div></div>';
+        if (e.files && e.files.length) h += '<div class="files">' + e.files.map(function (f, i) { return fileRow(id, f, i); }).join('') + '</div>';
+        if (st === 'none' || st === 'na' || e.note) h += '<input class="in" style="margin-top:10px;max-width:520px" id="note-' + id + '" data-bind="evidence:' + id + ':note" value="' + esc(e.note || '') + '" placeholder="Add a note, for example when it will be ready" aria-label="Note"' + (ro ? ' disabled' : '') + '>';
+        h += '</div><div class="doc-a">';
+        if (!ro) {
+          h += '<label class="btn pri">' + ic('up') + 'Upload<input type="file" class="sr" data-file="' + id + '" multiple accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp"></label>';
+          h += '<button class="btn ' + (st === 'none' ? 'on-none' : '') + '" data-act="docst" data-id="' + id + '" data-v="none" aria-pressed="' + (st === 'none') + '">We do not have it</button>';
+          h += '<button class="btn quiet ' + (st === 'na' ? 'on-na' : '') + '" data-act="docst" data-id="' + id + '" data-v="na" aria-pressed="' + (st === 'na') + '">Does not apply</button>';
+        }
+        if (consultant() && DOC_CHECKS[id]) h += '<button class="btn line" data-act="check" data-doc="' + id + '">' + ic('spark') + 'Check against the Act</button>';
+        h += '</div></div>';
+      });
+      h += '</section>';
+    });
+    if (!docs.length) h += '<div class="sheet empty"><h3>No documents needed yet</h3>Answer the scoping questions first.</div>';
+    return h;
+  }
+  function questionsTab() {
+    var d = D(), S = scope(), list = questionList(), ro = !canWrite(), removed = S.list.length - list.length, done = list.filter(respDone).length;
+    var show = ui.qf === 'todo' ? list.filter(function (x) { return !respDone(x); }) : list;
+    var h = '<div class="prog"><b>' + done + ' of ' + list.length + ' answered</b>' + progBar(done, list.length) + '<span class="chips"><button class="chip ' + (ui.qf ? '' : 'on') + '" data-act="qf" data-v="">All</button><button class="chip ' + (ui.qf === 'todo' ? 'on' : '') + '" data-act="qf" data-v="todo">Unanswered</button></span></div>';
+    h += '<div class="note">' + ic('info') + '<div>' + (removed ? '<b>' + plural(removed, 'question') + ' already removed</b> by your documents. ' : '') + 'A "Yes" with no document counts as partial until a consultant sees evidence.</div></div>';
+    [['legal', 'For compliance and legal'], ['it', 'For IT and security']].forEach(function (g) {
+      var its = show.filter(function (x) { return x.c.aud === g[0]; }); if (!its.length) return;
+      h += '<div class="dgroup">' + g[1] + ' <span class="faint" style="font-weight:400">' + its.length + '</span></div><section class="sheet docs">';
+      its.forEach(function (x) {
+        var c = x.c, r = d.responses[c.id] || {};
+        h += '<div class="qa"><div><div class="ref">' + esc(c.ref) + '</div></div><div><h3>' + esc(c.q) + '</h3><div class="ans" role="group" aria-label="Answer">' +
+          ANS.map(function (a) { return '<button class="' + (r.a === a[0] ? 'on' : '') + '" data-act="resp" data-id="' + c.id + '" data-v="' + a[0] + '" aria-pressed="' + (r.a === a[0]) + '"' + (ro ? ' disabled' : '') + '>' + a[1] + '</button>'; }).join('') + '</div>';
+        if (r.a) h += '<input class="in" style="margin-top:10px;max-width:560px" id="rn-' + c.id + '" data-bind="responses:' + c.id + ':note" value="' + esc(r.note || '') + '" placeholder="Add a note (optional)" aria-label="Note"' + (ro ? ' disabled' : '') + '>';
+        h += '<details><summary>What the Act says</summary><div style="margin-top:10px">' + actHTML(c) + '<div style="margin-top:8px">' + commHTML(x.comm) + '</div></div></details></div></div>';
+      });
+      h += '</section>';
+    });
+    if (!show.length) h += '<div class="sheet empty"><h3>' + (list.length ? 'All answered' : 'No questions left') + '</h3>' + (list.length ? 'Switch to All to review your answers.' : 'Your documents cover everything in scope.') + '</div>';
+    return h;
+  }
+  function activitiesTab() {
+    var d = D(), ids = Object.keys(d.activities || {}), ro = !canWrite();
+    var h = '<div class="prog"><span class="muted grow" style="max-width:72ch">List each thing the organisation does with personal data. The list becomes the record of processing under section 12(1)(a), and each row is checked against sections 5, 6, 9 and 26 as it is filled in.</span>' + (ro ? '' : '<button class="btn pri" data-act="act-new">' + ic('plus') + 'Add activity</button>') + (ids.length ? '<button class="btn" data-act="export" data-what="register">' + ic('down') + 'Export CSV</button>' : '') + '</div>';
+    if (!ids.length) return h + '<div class="sheet empty"><h3>No activities yet</h3>Start with the obvious ones: payroll, customer onboarding, marketing, CCTV.</div>';
+    h += '<div class="tw"><table class="t"><thead><tr><th>Activity</th><th>Lawful basis</th><th>Cross-border</th><th>Retention</th><th>Checks</th></tr></thead><tbody>';
+    ids.forEach(function (id) {
+      var a = d.activities[id], fl = actFlags(a);
+      h += '<tr class="click" data-act="act-edit" data-id="' + id + '" tabindex="0"><td><div class="tt">' + esc(a.name || 'Untitled activity') + '</div><div class="ts">' + esc(a.purpose || '') + '</div></td><td>' + (a.basis ? esc(L.S1[a.basis]) : '<span class="faint">Not set</span>') + (a.special === 'y' ? '<div class="ts">' + (a.basis2 ? esc(L.S2[a.basis2]) : 'Special categories') + '</div>' : '') + '</td><td>' + (a.xb === 'y' ? esc(a.xbCountry || 'Yes') + (a.xbGround ? '<div class="ts">' + esc(L.S26[a.xbGround]) + '</div>' : '') : a.xb === 'n' ? 'No' : '<span class="faint">Not set</span>') + '</td><td>' + (a.retention ? esc(a.retention) : '<span class="faint">Not set</span>') + '</td><td>' + (fl.length ? fl.map(function (x) { return '<span class="flag ' + x[0] + '" title="' + esc(x[2]) + '">' + esc(x[1]) + '</span>'; }).join('') : '<span class="flag ok">' + ic('check') + 'Complete</span>') + '</td></tr>';
+    });
+    return h + '</tbody></table></div>';
+  }
+  function activityDrawer(dr) {
+    var a = dr.draft, ro = !canWrite();
+    function inp(k, label, ph) { return '<label class="f">' + label + '<input class="in" id="ad-' + k + '" data-draft="' + k + '" value="' + esc(a[k] || '') + '" placeholder="' + esc(ph || '') + '"' + (ro ? ' disabled' : '') + '></label>'; }
+    function sel(k, label, opts, emptyLabel) { return '<label class="f">' + label + '<select class="in" id="ad-' + k + '" data-draft="' + k + '"' + (ro ? ' disabled' : '') + '><option value="">' + (emptyLabel || 'Select') + '</option>' + opts.map(function (o) { return '<option value="' + o[0] + '"' + (a[k] === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></label>'; }
+    var kv = function (m) { return Object.keys(m).map(function (k) { return [k, m[k]]; }); }, yn = [['y', 'Yes'], ['n', 'No']];
+    var h = '<div class="dr-h"><h2 class="grow">' + (dr.id ? 'Edit activity' : 'Add activity') + '</h2><button class="btn quiet" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">';
+    h += inp('name', 'Activity', 'For example: customer onboarding') + inp('purpose', 'Purpose (s.6)', 'Why the data is processed') + '<div class="f2">' + inp('subjects', 'Whose data', 'Customers, employees') + inp('data', 'Categories of personal data', 'Identity, contact, financial') + '</div>';
+    h += '<div class="f2">' + sel('basis', 'Lawful basis (s.5(a))', kv(L.S1)) + sel('special', 'Special categories used?', yn) + '</div>';
+    if (a.special === 'y') h += sel('basis2', 'Schedule II condition (s.5(b))', kv(L.S2));
+    if (a.basis === 'f') h += sel('lia', 'Legitimate interests assessment recorded?', yn);
+    h += '<div class="f2">' + sel('source', 'Where the data comes from', [['direct', 'From the data subject'], ['indirect', 'From another source']]) + inp('recipients', 'Recipients and processors', 'Who receives the data') + '</div>';
+    h += '<div class="f2">' + sel('xb', 'Moves out of Sri Lanka?', yn) + (a.xb === 'y' ? inp('xbCountry', 'Country', 'For example: Singapore') : '<div></div>') + '</div>';
+    if (a.xb === 'y') h += sel('xbGround', 'Section 26 ground or instrument', kv(L.S26), 'Not yet identified');
+    h += inp('retention', 'Retention period (s.9)', 'A period, or the criteria for setting it');
+    var fl = actFlags(a);
+    h += '<div>' + (fl.length ? fl.map(function (x) { return '<span class="flag ' + x[0] + '">' + esc(x[1]) + ' (' + esc(x[2]) + ')</span>'; }).join('') : '<span class="flag ok">' + ic('check') + 'No open checks on this activity</span>') + '</div>';
+    return h + '</div><div class="dr-f">' + (dr.id && !ro ? '<button class="btn danger" style="margin-right:auto" data-act="act-del" data-id="' + dr.id + '">' + ic('trash') + 'Delete</button>' : '') + '<button class="btn" data-act="close">Cancel</button>' + (ro ? '' : '<button class="btn pri" data-act="act-save">Save activity</button>') + '</div>';
+  }
+
+  /* ---------- review ---------- */
+  function filtered() {
+    var f = ui.f, q = f.q.trim().toLowerCase();
+    return scope().list.filter(function (x) {
+      var c = x.c;
+      if (f.dom && c.dom !== f.dom) return false;
+      if (f.st && info(c).s !== f.st) return false;
+      if (q && (c.ref + ' ' + c.title + ' ' + c.text).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+  function reviewView() {
+    var f = ui.f, list = filtered(), S = scope();
+    if (ui.sel && !S.map[ui.sel]) ui.sel = null;
+    var h = '<main class="view split"><div class="filters"><div class="search">' + ic('search') + '<input class="in" id="fq" data-filter="q" value="' + esc(f.q) + '" placeholder="Search a section or text" aria-label="Search checks"></div>';
+    h += '<select class="in" id="fdom" data-filter="dom" aria-label="Area"><option value="">All areas</option>' + L.DOMAINS.map(function (d) { return '<option value="' + d.id + '"' + (f.dom === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select>';
+    h += '<div class="chips" role="group" aria-label="Status">' + [['', 'All'], ['review', 'Awaiting review'], ['open', 'Not assessed'], ['gap', 'Gap'], ['partial', 'Partial'], ['compliant', 'Compliant']].map(function (t) { return '<button class="chip ' + (f.st === t[0] ? 'on' : '') + '" data-act="fst" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+    h += '<span class="faint num" style="margin-left:auto;font-size:13px">' + list.length + ' of ' + S.list.length + '</span></div>';
+    h += '<div class="md ' + (ui.sel ? 'has-sel' : '') + '"><div class="list" id="list">';
+    L.DOMAINS.forEach(function (dm) {
+      var its = list.filter(function (x) { return x.c.dom === dm.id; }); if (!its.length) return;
+      h += '<div class="lg">' + esc(dm.name) + '<span>' + esc(dm.refs) + '</span></div>';
+      its.forEach(function (x) { var i = info(x.c); h += '<button class="li ' + (ui.sel === x.c.id ? 'on' : '') + '" data-act="sel" data-id="' + x.c.id + '"><span class="ref">' + esc(x.c.ref) + '</span><span><span class="li-t">' + esc(x.c.title) + '</span><span class="li-m">' + stHTML(i.s, i.prov && i.s !== 'review') + (i.risk ? riskHTML(i.risk) : '') + '</span></span></button>'; });
+    });
+    if (!list.length) h += '<div class="empty"><h3>No checks match</h3>Clear a filter to see more.</div>';
+    return h + '</div><div class="detail" id="detail">' + (ui.sel ? detailHTML(S.map[ui.sel], true) : '<div class="empty" style="margin-top:90px"><h3>Select a check</h3>The text of the Act, the evidence and your finding appear here.</div>') + '</div></div></main>';
+  }
+  function detailHTML(x, edit) {
+    var c = x.c, d = D(), i = info(c), f = d.findings[c.id] || {}, dm = DM[c.dom], ro = !canWrite() || !edit, r = d.responses[c.id], cust = asCust(), open = i.s === 'gap' || i.s === 'partial';
+    var h = '<article class="dt"><header>' + (edit ? '<button class="btn sm back" data-act="sel" data-id="">' + ic('back') + 'All checks</button>' : '') + '<div class="ref">' + esc(c.ref) + ', ' + esc(dm.name) + (c.track === 'tech' ? ', ' + esc(L.TDOMS[c.tdom]) : '') + '</div><h2>' + esc(c.title) + '</h2><div class="d-m">' + stHTML(i.s, i.prov && i.s !== 'review') + (i.risk ? riskHTML(i.risk) : '') + commHTML(x.comm) + '</div></header>';
+    if (!cust && edit) {
+      h += '<section class="find">' + (i.prov && i.why ? '<div class="note">' + ic('info') + '<div><b>Provisional: ' + ST[i.s].toLowerCase() + '.</b> ' + esc(i.why) + ' Choose a status to confirm or change it.</div></div>' : '');
+      h += '<div class="st-seg" role="group" aria-label="Your finding">' + ['compliant', 'partial', 'gap', 'na'].map(function (s) { return '<button class="' + (f.status === s ? 'on ' : '') + s + '" data-act="setst" data-id="' + c.id + '" data-v="' + s + '" aria-pressed="' + (f.status === s) + '"' + (ro ? ' disabled' : '') + '>' + ST[s] + '</button>'; }).join('') + '</div></section>';
+    }
+    h += '<section class="sec law"><h4>' + (c.track === 'tech' ? 'What we assess' : 'What the Act says') + '</h4>' + actHTML(c) + (c.note ? '<div class="note" style="margin-top:12px">' + ic('info') + '<div>' + esc(c.note) + '</div></div>' : '') + (x.comm !== 'inforce' ? '<div class="note" style="margin-top:8px">' + ic('info') + '<div>' + esc(L.COMM[x.comm].desc) + '</div></div>' : '') + '<p class="muted" style="margin-top:12px"><b>Why it applies.</b> ' + esc(x.why) + '</p></section>';
+    h += '<section class="sec"><h4>Evidence</h4><p class="muted">' + esc(c.look) + '</p><div class="evl">';
+    (c.ev || []).forEach(function (id) {
+      var st = docState(id), e = d.evidence[id] || {}, files = e.files || [];
+      h += '<div class="evi">' + ic('doc') + '<b>' + esc(DOCM[id].name) + '</b>' + (st === 'provided' ? '<span class="flag ok">Provided</span>' : st === 'none' ? '<span class="flag bad">Not held</span>' : st === 'na' ? '<span class="tag">Marked as not applying</span>' : '<span class="tag">Not received yet</span>') +
+        files.map(function (fl) { return fl.id ? '<a href="/_blob/' + esc(fl.id) + '" target="_blank" rel="noopener">' + esc(fl.name) + '</a>' : '<span class="muted">' + esc(fl.name) + '</span>'; }).join(' ') + (e.note ? '<span class="muted">' + esc(e.note) + '</span>' : '') +
+        (edit && consultant() && DOC_CHECKS[id] && DOC_CHECKS[id](c) ? '<button class="btn line sm" style="margin-left:auto" data-act="check" data-doc="' + id + '">' + ic('spark') + 'Check document</button>' : '') + '</div>';
+    });
+    h += '</div>' + (cust ? '' : '<p style="margin-top:12px"><b>The organisation said:</b> ' + (r && r.a ? ANSM[r.a] + (r.note ? '. ' + esc(r.note) : '') : '<span class="muted">no answer yet to "' + esc(c.q) + '"</span>') + '</p>') + '</section>';
+    if (cust) return h + '<section class="sec"><h4>Finding</h4>' + (i.obs ? '<p>' + esc(i.obs) + '</p>' : '<p class="muted">No observation recorded.</p>') + (i.rec ? '<p style="margin-top:8px"><b>Recommended action.</b> ' + esc(i.rec) + '</p>' : '') + (i.phase ? '<p class="muted" style="margin-top:8px">Start within ' + PHM[i.phase] + (i.owner ? '. Owner: ' + esc(i.owner) : '') + '.</p>' : '') + '</section></article>';
+    h += '<section class="sec stack" style="gap:14px"><label class="f">Observation<textarea class="in" id="obs-' + c.id + '" data-bind="findings:' + c.id + ':obs" placeholder="What you reviewed and what you found"' + (ro ? ' disabled' : '') + '>' + esc(f.obs || '') + '</textarea></label>';
+    if (open && i.rk) {
+      var rk = i.rk;
+      h += '<label class="f">Recommendation<textarea class="in" id="rec-' + c.id + '" data-bind="findings:' + c.id + ':rec" placeholder="' + esc(c.fix) + '"' + (ro ? ' disabled' : '') + '>' + esc(f.rec || '') + '</textarea></label>' + (f.rec ? '' : '<div class="muted" style="font-size:13px;margin-top:-8px">Left blank, the report uses the suggested action shown in grey.</div>');
+      h += '<div class="f3"><label class="f">Risk<select class="in" id="risk-' + c.id + '" data-bind="findings:' + c.id + ':risk"' + (ro ? ' disabled' : '') + '><option value="">Calculated: ' + rk.auto + '</option>' + ['High', 'Medium', 'Low'].map(function (v) { return '<option' + (f.risk === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></label>';
+      h += '<label class="f">Start within<select class="in" id="ph-' + c.id + '" data-bind="findings:' + c.id + ':phase"' + (ro ? ' disabled' : '') + '><option value="">Suggested: ' + PHM[autoPhase(x.comm, rk.rating)] + '</option>' + PH.map(function (p) { return '<option value="' + p[0] + '"' + (f.phase === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') + '</select></label>';
+      h += '<label class="f">Owner<input class="in" id="own-' + c.id + '" data-bind="findings:' + c.id + ':owner" value="' + esc(f.owner || '') + '" placeholder="Role or team"' + (ro ? ' disabled' : '') + '></label></div>';
+      h += '<div class="muted" style="font-size:13px">Calculated risk: obligation weight ' + ['', 'Low', 'Medium', 'High'][rk.base] + '. Exposure ' + rk.exp + ' of 4 (individuals ' + rk.scale + ', special categories ' + rk.special + ', programme weakness ' + rk.dp + ')' + (rk.exp >= 3 ? ', so raised one level' : '') + '.' + (rk.partial ? ' Partial, so lowered one level.' : '') + ' <a href="#method">How ratings work</a></div>';
+    }
+    var rv = f.reviewedAt, nm = nameOf(f.reviewedBy);
+    h += '<div class="signoff"><div class="grow muted">' + (rv ? 'Signed off ' + fmtDate(rv) + (nm ? ' by ' + esc(nm) : '') : 'Not signed off yet') + '</div>' + (ro ? '' : '<button class="btn ' + (rv ? '' : 'pri') + '" data-act="signoff" data-id="' + c.id + '"' + (f.status ? '' : ' disabled title="Choose a status first"') + '>' + (rv ? 'Remove sign-off' : 'Sign off') + '</button>') + '</div></section></article>';
+    return h;
+  }
+
+  /* ---------- results ---------- */
+  function resultsView() {
+    var d = D(), ro = !canWrite(), gl = gapList(), h = '<div class="page">' + tabsHTML('results', [['gaps', 'Gaps', String(gl.length)], ['roadmap', 'Roadmap', ''], ['report', 'Report', '']]);
+    if (consultant()) {
+      var prov = tally(scope().list).prov, rel = !!d.config.released;
+      h += '<div class="release ' + (rel ? 'done' : '') + '"><div class="grow">' + (rel ? '<b>Released to the customer on ' + fmtDate(d.config.releasedAt) + '.</b> They see the findings as they stood then.' : '<b>Not released.</b> The customer sees no findings yet.') + (prov ? ' ' + plural(prov, 'finding') + ' still provisional.' : '') + '</div>' + (ro ? '' : '<button class="btn pri" data-act="release">' + (rel ? 'Release again' : 'Release findings') + '</button>' + (rel ? '<button class="btn" data-act="unrelease">Withdraw</button>' : '')) + '</div>';
+    }
+    return h + ({ gaps: gapsTab, roadmap: roadmapTab, report: reportTab }[ui.tab.results])() + '</div>';
+  }
+  function gapsTab() {
+    var all = gapList(), list = ui.gf ? all.filter(function (x) { return info(x.c).risk === ui.gf; }) : all, cnt = { High: 0, Medium: 0, Low: 0 };
+    all.forEach(function (x) { cnt[info(x.c).risk]++; });
+    var h = '<div class="prog"><div class="chips" role="group" aria-label="Risk">' + [['', 'All ' + all.length], ['High', 'High ' + cnt.High], ['Medium', 'Medium ' + cnt.Medium], ['Low', 'Low ' + cnt.Low]].map(function (t) { return '<button class="chip ' + (ui.gf === t[0] ? 'on' : '') + '" data-act="gf" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div><span class="grow"></span>' + (all.length ? '<button class="btn" data-act="export" data-what="gaps">' + ic('down') + 'Export CSV</button>' : '') + '</div>';
+    if (!list.length) return h + '<div class="sheet empty"><h3>No gaps recorded' + (ui.gf ? ' at this rating' : '') + '</h3>Gaps and partial findings appear here as the assessment moves on.</div>';
+    h += '<div class="tw"><table class="t"><thead><tr><th>Section</th><th>Finding</th><th>Status</th><th>Risk</th><th>In operation</th><th>Start within</th><th>Owner</th></tr></thead><tbody>';
+    list.forEach(function (x) {
+      var c = x.c, i = info(c);
+      h += '<tr class="click" data-act="open" data-id="' + c.id + '" tabindex="0"><td><span class="ref" style="white-space:nowrap">' + esc(c.ref) + '</span></td><td><div class="tt">' + esc(c.title) + '</div><div class="ts">' + esc(i.obs || i.why || '') + '</div></td><td>' + stHTML(i.s, i.prov) + '</td><td>' + riskHTML(i.risk) + '</td><td>' + commHTML(x.comm, true) + '</td><td style="white-space:nowrap">' + (PHM[i.phase] || '') + '</td><td>' + esc(i.owner || '') + '</td></tr>';
+    });
+    return h + '</tbody></table></div>';
+  }
+  function roadmapTab() {
+    var all = gapList(), ro = !canWrite() || asCust();
+    if (!all.length) return '<div class="sheet empty"><h3>Nothing to schedule yet</h3>The roadmap fills as gaps and partial findings are recorded.</div>';
+    var h = '<p class="muted" style="max-width:75ch">Each action starts in the phase its risk suggests. Obligations not yet in operation start in the last phase.' + (ro ? '' : ' Move an action by changing its phase.') + '</p><div class="road">';
+    PH.forEach(function (p) {
+      var its = all.filter(function (x) { return info(x.c).phase === p[0]; });
+      h += '<div class="col"><div class="col-h"><b>' + p[1] + '</b><span>' + its.length + '</span></div>';
+      its.forEach(function (x) {
+        var c = x.c, i = info(c);
+        h += '<div class="rc"><div class="rc-h"><button class="ref" data-act="open" data-id="' + c.id + '">' + esc(c.ref) + '</button>' + riskHTML(i.risk) + '</div><p>' + esc(i.rec || c.fix) + '</p><div class="rc-f">' + (i.owner ? '<span>' + esc(i.owner) + '</span>' : '') + (x.comm === 'rules' ? '<span class="tag">Finalise when rules are made</span>' : '') +
+          (ro ? '' : '<select data-phase="' + c.id + '" aria-label="Phase for ' + esc(c.ref) + '">' + PH.map(function (q) { return '<option value="' + q[0] + '"' + (i.phase === q[0] ? ' selected' : '') + '>' + q[1] + '</option>'; }).join('') + '</select>') + '</div></div>';
+      });
+      if (!its.length) h += '<div class="faint" style="padding:8px 2px">No actions</div>';
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+  function reportTab() {
+    var d = D(), ro = !canWrite(), h = '';
+    if (consultant()) h += '<label class="f" style="max-width:920px">Your summary, added to section 1 of the report<textarea class="in" id="summary" data-bind="config::summary" placeholder="Optional. Your own words on overall readiness, the main risks and the decisions needed from leadership."' + (ro ? ' disabled' : '') + '>' + esc(d.config.summary || '') + '</textarea></label>';
+    h += '<div class="prog"><button class="btn pri" data-act="export" data-what="report">' + ic('down') + 'Download report</button><button class="btn" data-act="export" data-what="gaps">' + ic('down') + 'Gap register CSV</button>' + (consultant() ? '<button class="btn" data-act="export" data-what="backup">' + ic('down') + 'Workspace backup</button>' : '') + '<span class="muted">The report opens in Word and prints to PDF from a browser.</span></div>';
+    return h + '<article class="paper prose" id="report">' + reportHTML() + '</article>';
+  }
+
+  /* ---------- how it works ---------- */
+  function methodView() {
+    var h = '<div class="page narrow"><h1 class="headline long">How this workspace decides</h1>';
+    h += '<section class="sheet"><div class="sh">What is in operation</div><p class="muted" style="max-width:72ch">Extraordinary Gazette No. 2498/16 appoints 1 January 2027 for sections 2 and 3, Part I and Part III of the Act. Every check carries one of four labels.</p><div style="margin-top:8px">' + Object.keys(L.COMM).map(function (k) { return '<div class="det"><div>' + commHTML(k) + '</div><p>' + esc(L.COMM[k].desc) + '</p></div>'; }).join('') + '</div></section>';
+    h += '<section class="sheet prose"><div class="sh">How a status is reached</div><p>The workspace proposes a provisional status from what the organisation supplies. A consultant confirms or changes it. Only a consultant can mark a check compliant.</p><table><thead><tr><th>What the organisation did</th><th>Provisional status</th></tr></thead><tbody><tr><td>Added a document that evidences the check</td><td>Awaiting review</td></tr><tr><td>Said it does not hold any document that would evidence the check</td><td>Gap</td></tr><tr><td>Answered "Yes, in place" with no document</td><td>Partial. Section 12(1)(a) requires catalogued records that demonstrate compliance.</td></tr><tr><td>Answered "Partly"</td><td>Partial</td></tr><tr><td>Answered "No"</td><td>Gap</td></tr><tr><td>Nothing yet, or "Don\'t know"</td><td>Not assessed</td></tr></tbody></table></section>';
+    h += '<section class="sheet prose"><div class="sh">How risk is rated</div>' + ratingMethodHTML() + '</section>';
+    h += '<section class="sheet prose"><div class="sh">Document checks</div><p>A consultant can ask Claude to compare a privacy notice, consent wording, processor agreement, Data Protection Officer terms or breach procedure with the relevant items of the Act. Three safeguards apply.</p><ul><li>Email addresses, phone numbers, NIC numbers and long digit strings are masked in the browser before anything is sent. Names and addresses are not detected, so the consultant reads the masked text and confirms it first.</li><li>Every passage Claude quotes is searched for in the document. A quote that cannot be found is flagged and is never accepted in bulk.</li><li>A result changes nothing until a consultant accepts it.</li></ul><div class="note warn" style="margin-top:10px">' + ic('lock') + '<div>Claude and this workspace run on cloud services outside Sri Lanka. Sending or storing text that contains personal data would be a cross-border data flow under section 26, with TechNeura acting as a processor under section 22. Use policies, templates and masked text only, and have legal counsel confirm the position in the engagement terms.</div></div></section>';
+    h += '<section class="sheet prose"><div class="sh">Who sees what</div><table><thead><tr><th>Person</th><th>Sees and does</th></tr></thead><tbody><tr><td>Consultant: the workspace owner and editors in TechNeura\'s organisation</td><td>Everything. Records findings, signs them off and releases them.</td></tr><tr><td>Customer: contributors, and anyone invited from outside TechNeura</td><td>About you, Evidence and the activities list. Results appear once a consultant releases them.</td></tr><tr><td>Viewer</td><td>Reads what a customer can read. Changes nothing.</td></tr></tbody></table></section>';
+    h += '<section class="sheet prose"><div class="sh">Points for legal counsel</div><ul>' + L.COUNSEL_POINTS.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul></section>';
+    h += '<section class="sheet"><div class="sh">Sources <small>Library verified ' + L.VERIFIED + '</small></div>' + L.SOURCES.map(function (s) { return '<div class="det"><div><b>' + (s.u ? '<a href="' + s.u + '" target="_blank" rel="noopener">' + esc(s.t) + '</a>' : esc(s.t)) + '</b></div><p>' + esc(s.n) + '</p></div>'; }).join('') + '</section>';
+    h += '<section class="sheet lib"><div class="sh">The full library <small>' + C.length + ' checks. Statutory text is quoted from the Acts.</small></div>';
+    L.DOMAINS.forEach(function (dm) {
+      var its = C.filter(function (c) { return c.dom === dm.id; });
+      h += '<details><summary>' + esc(dm.name) + '<span class="ref">' + esc(dm.refs) + ', ' + its.length + '</span></summary><div class="stack" style="margin:6px 0 18px">' + its.map(function (c) { return '<div><div class="row" style="gap:10px;margin-bottom:6px"><span class="ref">' + esc(c.ref) + '</span><b>' + esc(c.title) + '</b></div>' + actHTML(c) + '</div>'; }).join('') + '</div></details>';
+    });
+    return h + '</section></div>';
+  }
+
+  /* ---------- overlays ---------- */
+  function drawerHTML() {
+    var dr = ui.drawer; if (!dr) return '';
+    var inner = dr.type === 'activity' ? activityDrawer(dr) : dr.type === 'check' ? checkDrawer(dr) : '<div class="dr-h"><span class="grow"></span><button class="btn quiet" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">' + detailHTML(scope().map[dr.id], false) + '</div>';
+    return '<div class="scrim"><div class="drawer ' + (dr.type === 'activity' ? '' : 'wide') + '" role="dialog" aria-modal="true">' + inner + '</div></div>';
+  }
+  function dialogHTML() {
+    var d = ui.dialog; if (!d) return '';
+    if (d.type === 'tour') return '<div class="scrim center"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">Take a tour</h2><p class="muted">Each tour walks through the workspace on example data for a fictional company. Nothing is saved, and your own work is back when the tour ends.</p><button class="tour-pick" data-act="tour-pick" data-v="consultant"><b>Consultant tour</b><span>' + TOURS.consultant.length + ' stops, from scoping to the released report.</span></button><button class="tour-pick" data-act="tour-pick" data-v="customer"><b>Customer tour</b><span>' + TOURS.customer.length + ' stops. What the customer is asked for, and what they see after release.</span></button><div class="row" style="justify-content:flex-end"><button class="btn" data-act="dlg-no">Not now</button></div></div></div>';
+    return '<div class="scrim center"><div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">' + esc(d.title) + '</h2><p class="muted">' + esc(d.text) + '</p><div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" data-act="dlg-no">Cancel</button><button class="btn pri" data-act="dlg-yes">' + esc(d.ok) + '</button></div></div></div>';
+  }
+  function checkDrawer(dr) {
+    var items = checkItems(dr.doc), doc = DOCM[dr.doc], m = dr.text ? maskText(dr.text) : null, files = ((D().evidence[dr.doc] || {}).files || []).filter(function (f) { return f.id && /\.(pdf|txt|md)$/i.test(f.name); });
+    var h = '<div class="dr-h"><h2 class="grow">Check ' + esc(doc.name.toLowerCase()) + ' against the Act</h2><button class="btn quiet" data-act="close" aria-label="Close">' + ic('x') + '</button></div><div class="dr-b" id="drb">';
+    if (!ui.sample && !ui.tour) h += '<div class="note warn">' + ic('warn') + '<div>Document checks are not available in this view. Open the workspace in Claude while signed in, or review the document by hand under Review.</div></div>';
+    h += '<section class="sec"><h4>1. The document</h4><div class="row" style="margin-bottom:8px"><label class="btn">' + ic('up') + 'Read a file<input type="file" class="sr" data-read="1" accept=".pdf,.docx,.txt,.md"></label>' + files.map(function (f) { return '<button class="btn" data-act="readasset" data-id="' + esc(f.id) + '" data-name="' + esc(f.name) + '">' + ic('doc') + esc(f.name) + '</button>'; }).join('') + (dr.busy ? '<span class="muted">Reading the file</span>' : '') + '</div><textarea class="in" id="chk-text" data-check="text" style="min-height:110px" placeholder="Or paste the text of the document here">' + esc(dr.text || '') + '</textarea>' + (dr.source ? '<div class="faint" style="font-size:13px;margin-top:4px">Source: ' + esc(dr.source) + (dr.cut ? '. Only the first 150,000 characters are used.' : '') + '</div>' : '') + '</section>';
+    h += '<section class="sec"><h4>2. What will be sent</h4>' + (m ? '<div class="masked" tabindex="0">' + esc(m.text.slice(0, 6000)).replace(/\[(email|NIC|phone|number)\]/g, '<mark>$1</mark>') + (m.text.length > 6000 ? '\n…' : '') + '</div><div class="muted" style="font-size:13.5px;margin-top:6px">' + plural(m.n, 'value') + ' masked. Names and addresses are not detected automatically, so read the text before you send it.</div><label class="sw" style="margin-top:10px"><input type="checkbox" id="chk-ok" data-check="ok"' + (dr.ok ? ' checked' : '') + '><span>I have read this text. It contains no personal data other than what is masked, and I am content to send it to Claude, which runs outside Sri Lanka.</span></label>' : '<p class="muted">Add the document text to see the masked version.</p>') + '</section>';
+    h += '<section class="sec"><h4>3. Compare with ' + plural(items.length, 'item') + ' of the Act</h4><div class="row"><button class="btn pri" data-act="runcheck"' + (m && dr.ok && ui.sample && !dr.running ? '' : ' disabled') + '>' + ic('spark') + (dr.running ? 'Checking. This can take a minute.' : dr.results ? 'Run again' : 'Run the check') + '</button>' + (dr.running ? '<button class="btn" data-act="stopcheck">Stop</button>' : '') + (dr.err ? '<span style="color:var(--gap)">' + esc(dr.err) + '</span>' : '') + '</div></section>';
+    if (dr.results) {
+      var ver = dr.results.filter(function (r) { return r.result !== 'not_found' && r.verified && !r.accepted; }).length;
+      h += '<section class="sec"><h4>4. Results to review</h4><div class="note" style="margin-bottom:10px">' + ic('info') + '<div>These are suggestions. Nothing changes until you accept a result. "Not found" may also mean the text was not read correctly, so open the document before accepting a gap.</div></div>' + (ver ? '<div class="row" style="margin-bottom:10px"><button class="btn" data-act="acceptall">Accept ' + plural(ver, 'result') + ' with verified quotes</button></div>' : '') + '<div class="stack" style="gap:8px">';
+      dr.results.forEach(function (r, idx) {
+        var c = CM[r.id]; if (!c) return;
+        var sug = r.result === 'met' ? 'compliant' : r.result === 'partial' ? 'partial' : 'gap';
+        h += '<div class="res"><div class="res-h"><span class="ref">' + esc(c.ref) + '</span><b class="grow">' + esc(c.title) + '</b><span class="st ' + sug + '">' + (r.result === 'met' ? 'Found' : r.result === 'partial' ? 'Partly found' : 'Not found') + '</span></div>';
+        if (r.quote) h += '<blockquote>' + esc(r.quote) + '</blockquote><div>' + (r.verified ? '<span class="flag ok">' + ic('check') + 'Quote found in the document</span>' : '<span class="flag bad">' + ic('warn') + 'Quote not found in the document. Check by hand.</span>') + '</div>';
+        h += '<div class="muted" style="font-size:13.5px">' + esc(r.reason || '') + '</div><div class="row">' + (r.accepted ? '<span class="flag ok">' + ic('check') + 'Recorded as ' + ST[r.accepted].toLowerCase() + '</span>' : ['compliant', 'partial', 'gap'].map(function (s) { return '<button class="btn sm ' + (s === sug ? 'pri' : '') + '" data-act="accept" data-i="' + idx + '" data-v="' + s + '">Record as ' + ST[s].toLowerCase() + '</button>'; }).join('')) + '</div></div>';
+      });
+      h += '</div></section>';
+    }
+    return h + '</div>';
+  }
+
   /* ---------- guided tour ---------- */
   var TOUR_TEXT = 'Example Insurance (fictional) privacy notice. We collect your name, your NIC number 901234567V, your mobile number 077 123 4567 and your email address. Questions go to privacy@example.lk. We share claim details with our reinsurer. You may complain to the Data Protection Authority.';
-  function noticeCard() { var b = document.querySelector('[data-act="check"][data-doc="notice"]'); return b ? b.closest('.doc') : document.querySelector('.doc'); }
+  function noticeRow() { var b = document.querySelector('[data-act="check"][data-doc="notice"]'); return b ? b.closest('.doc') : document.querySelector('.doc'); }
+  function tourRelease() { if (example.config.released) return; var was = ui.asCustomer; ui.asCustomer = false; touch(); doRelease(true, true); ui.asCustomer = was; touch(); }
   var TOURS = {
     consultant: [
-      { view: 'overview', sel: '.hero', title: 'Readiness at a glance', text: 'The score covers obligations that come into operation on 1 January 2027. Each mark in the strip is one check, in the order of the Act. Tall marks are obligations in the Act and short marks are technical criteria.' },
-      { view: 'scope', sel: '.scope .q', title: 'Scoping comes first', text: 'About twenty questions, most answered in one click. Each question shows the section of the Act it comes from.' },
-      { view: 'scope', sel: '.inscope', title: 'Answers switch checks on and off', text: 'The count shows how many of the ' + C.length + ' checks apply. Below it the tool states what the answers mean for role, the Data Protection Officer, impact assessments and cross-border flows.' },
-      { view: 'documents', sel: noticeCard, title: 'One document answers many checks', text: 'The customer adds a file or says they do not have it. "Not held" records a provisional gap straight away and removes the related questions.' },
-      { view: 'documents', sel: '.drawer', pre: function () { ui.drawer = { type: 'check', doc: 'notice', text: TOUR_TEXT, source: 'Privacy notice (example)', ok: false, results: null, err: '' }; }, title: 'Check a document against the Act', text: 'Claude compares the document with each item of the Act. Emails, phone numbers and NIC numbers are masked first. Every quote is searched for in the document, and nothing changes until you accept a result.' },
-      { view: 'assessment', sel: function () { var a = document.querySelector('#detail .act'); return a ? a.closest('.sec') : null; }, pre: function () { ui.sel = 'sv1i'; }, title: 'The Act on every check', text: 'Each check quotes the provision, says why it applies and shows whether it is in operation, awaits rules or needs legal counsel to confirm.' },
-      { view: 'assessment', sel: '.find', pre: function () { ui.sel = 'sv1i'; }, title: 'Record the finding', text: 'Set the status, write the observation and recommendation, adjust the calculated risk and sign off. Only a consultant can mark a check compliant.' },
-      { view: 'register', sel: '.tw', title: 'Processing register', text: 'Each activity is checked as it is entered: lawful basis, Schedule II condition, section 26 ground and retention period. It doubles as the record that section 12(1)(a) asks for.' },
-      { view: 'gaps', sel: '.tw', title: 'Gap register', text: 'Every gap and partial finding, rated and sorted. Provisional items stay flagged until you review them. The register exports to CSV.' },
-      { view: 'roadmap', sel: '.road', title: 'Remediation roadmap', text: 'Actions fall into four phases by risk. Move any action by changing its phase.' },
-      { view: 'report', sel: '#view .card', title: 'Release and report', text: 'The customer sees no findings until you release them. The report builds itself from the findings and downloads as a file that opens in Word and prints to PDF.' },
-      { view: 'report', sel: '.rail-foot .seg', title: 'See the customer\'s side', text: 'Switch to Customer view at any time to check exactly what the customer sees.', other: true }
+      { go: 'home', sel: '.stages', title: 'Four stages, left to right', text: 'Scope, Evidence, Review, Results. Each stage shows what is left in it, so you always know where the engagement stands.' },
+      { go: 'home', sel: '.hero', title: 'The Act, check by check', text: 'Every mark is one check, in the order of the Act. The headline above is readiness for the obligations that come into operation on 1 January 2027.' },
+      { go: 'home', sel: '.cta', title: 'One next step', text: 'The workspace always suggests the next thing to do. You can still go anywhere.' },
+      { go: 'scope', pre: function () { ui.qid = 'special'; }, sel: '.wq', title: 'One question at a time', text: 'About twenty questions, most answered in one click. Each shows the section of the Act it comes from.' },
+      { go: 'scope', pre: function () { ui.qid = 'sum'; }, sel: '.wq', title: 'What the answers mean', text: 'The profile switches checks on and off, then states the position on role, the Data Protection Officer, impact assessments and cross-border flows.' },
+      { go: 'documents', sel: noticeRow, title: 'One document answers many checks', text: 'The customer uploads a file or says they do not have it. "Not held" records a provisional gap straight away and removes the related questions.' },
+      { go: 'documents', sel: '.drawer', pre: function () { ui.drawer = { type: 'check', doc: 'notice', text: TOUR_TEXT, source: 'Privacy notice (example)', ok: false, results: null, err: '' }; }, title: 'Check a document against the Act', text: 'Claude compares the document with each item of the Act. Emails, phone numbers and NIC numbers are masked first. Every quote is searched for in the document, and nothing changes until you accept a result.' },
+      { go: 'review', pre: function () { ui.sel = 'sv1i'; }, sel: '#detail .law', title: 'The Act on every check', text: 'Wherever the law speaks it is quoted and highlighted, with why it applies and whether it is in operation, awaits rules or needs counsel to confirm.' },
+      { go: 'review', pre: function () { ui.sel = 'sv1i'; }, sel: '#detail .find', title: 'Record the finding', text: 'Choose a status. Observation, recommendation, risk and sign-off sit below. Only a consultant can mark a check compliant.' },
+      { go: 'activities', sel: '.tw', title: 'Activities', text: 'Each activity is checked as it is entered: lawful basis, Schedule II condition, section 26 ground and retention. It doubles as the record that section 12(1)(a) asks for.' },
+      { go: 'gaps', sel: '.tw', title: 'Gaps', text: 'Every gap and partial finding, rated and sorted. Provisional items stay marked until you review them.' },
+      { go: 'roadmap', sel: '.road', title: 'Roadmap', text: 'Actions fall into four phases by risk. Move any action by changing its phase.' },
+      { go: 'report', sel: '.release', title: 'Release and report', text: 'The customer sees no findings until you release them. The report builds itself and downloads as a file that opens in Word and prints to PDF.' },
+      { go: 'report', sel: '.role', title: 'See the customer\'s side', text: 'Switch to Customer view at any time to check exactly what the customer sees.', other: true }
     ],
     customer: [
-      { view: 'overview', sel: '.steps', title: 'Three things we need from you', text: 'The profile, your documents, then whatever questions are left. Each bar shows how far along you are.' },
-      { view: 'scope', sel: '.scope .q', title: 'Tell us about your organisation', text: 'Your answers decide which parts of the Act apply to you. Where "Not sure yet" is offered, choose it and your consultant will follow up.' },
-      { view: 'documents', sel: '.note.warn', title: 'Keep personal data out', text: 'Share policies, procedures, templates and blank forms. Remove names, identity numbers and records about individuals before you add a file.' },
-      { view: 'documents', sel: '.doc .doc-a', title: 'Add it, or say you do not have it', text: 'Either answer helps. Saying you do not have a document is recorded as a gap and saves you answering the related questions.' },
-      { view: 'questions', sel: '.qa', title: 'Answer what is left', text: 'Only questions your documents did not cover appear here. Open "What the Act says" to read the provision behind any question.' },
-      { view: 'register', sel: '.tw', title: 'List what you do with personal data', text: 'Add each activity once. The workspace points out what is missing, such as a lawful basis or a retention period.' },
-      { view: 'overview', sel: '.hero', pre: tourRelease, title: 'When your consultant releases the findings', text: 'You see your readiness score and every check. Until then this page shows only your three steps.' },
-      { view: 'gaps', sel: '.tw', pre: tourRelease, title: 'Your gap register, roadmap and report', text: 'Select any row to read the Act, the finding and the recommended action. The roadmap and the downloadable report are in the menu.' }
+      { go: 'home', sel: '.steps3', title: 'Three steps', text: 'About you, your documents, then whatever questions are left. Each bar shows how far along you are.' },
+      { go: 'scope', pre: function () { ui.qid = 'special'; }, sel: '.wq', title: 'Tell us about your organisation', text: 'One question at a time. Where "Not sure yet" is offered, choose it and your consultant will follow up.' },
+      { go: 'documents', sel: '.pd-note', title: 'Keep personal data out', text: 'Share policies, procedures, templates and blank forms. Remove names, identity numbers and records about individuals first.' },
+      { go: 'documents', sel: '.doc .doc-a', title: 'Upload it, or say you do not have it', text: 'Either answer helps. Saying you do not have a document is recorded as a gap and saves you the related questions.' },
+      { go: 'questions', sel: '.qa', title: 'Answer what is left', text: 'Only questions your documents did not cover appear here. Open "What the Act says" to read the provision behind any question.' },
+      { go: 'activities', sel: '.tw', title: 'List what you do with personal data', text: 'Add each activity once. The workspace points out what is missing, such as a lawful basis or a retention period.' },
+      { go: 'home', pre: tourRelease, sel: '.hero', title: 'When your consultant releases the findings', text: 'You see your readiness and every check. Until then the overview shows only your three steps.' },
+      { go: 'gaps', pre: tourRelease, sel: '.tw', title: 'Your gaps, roadmap and report', text: 'Select any row to read the Act, the finding and the recommended action. The roadmap and the report sit beside it.' }
     ]
   };
-  function tourRelease() { if (example.config.released) return; var was = ui.asCustomer; ui.asCustomer = false; touch(); doRelease(true, true); ui.asCustomer = was; touch(); }
   function startTour(who) {
-    ui.tourPrev = { example: ui.example, exampleAuto: ui.exampleAuto, asCustomer: ui.asCustomer, view: ui.view };
+    ui.tourPrev = { example: ui.example, exampleAuto: ui.exampleAuto, asCustomer: ui.asCustomer, hash: curHash() || 'home', qid: ui.qid };
     example = buildExample(); ui.example = true; ui.asCustomer = who === 'customer'; ui.tour = { who: who, i: 0 };
     tourApply();
   }
@@ -950,9 +964,8 @@
     var st = TOURS[ui.tour.who][ui.tour.i];
     ui.drawer = null; ui.dialog = null; dialogFn = null; ui.sel = null; ui.f = { q: '', dom: '', st: '', track: '', comm: '' }; ui.gf = ''; ui.qf = '';
     touch(); if (st.pre) st.pre(); touch();
-    ui.view = st.view;
-    if ((location.hash || '').replace('#', '') !== st.view) location.hash = st.view;
-    render();
+    if (curHash() !== st.go) location.hash = st.go;
+    route(); render();
   }
   function tourStep(n) {
     if (!ui.tour) return;
@@ -962,18 +975,17 @@
   }
   function endTour(keepView) {
     var pv = ui.tourPrev || {};
-    ui.tour = null; ui.tourPrev = null; ui.drawer = null; ui.dialog = null; ui.sel = null;
+    ui.tour = null; ui.tourPrev = null; ui.drawer = null; ui.dialog = null; ui.sel = null; ui.qid = pv.qid || null;
     ui.example = !!pv.example; ui.exampleAuto = !!pv.exampleAuto; ui.asCustomer = !!pv.asCustomer; example = buildExample(); touch();
     if (keepView) return;
-    ui.view = pv.view || 'overview';
-    if ((location.hash || '').replace('#', '') !== ui.view) location.hash = ui.view;
-    render();
+    if (curHash() !== pv.hash) location.hash = pv.hash || 'home';
+    route(); render();
   }
   function tourHTML() {
     if (!ui.tour) return '';
     var steps = TOURS[ui.tour.who], i = ui.tour.i, st = steps[i], last = i === steps.length - 1;
-    return '<div class="tour-block"></div><div class="tour-spot" id="tour-spot"></div><div class="tour-pop" id="tour-pop" role="dialog" aria-labelledby="tour-t" aria-describedby="tour-d"><div class="row" style="gap:8px"><span class="tour-n grow">' + (ui.tour.who === 'consultant' ? 'Consultant' : 'Customer') + ' tour · ' + (i + 1) + ' of ' + steps.length + '</span><button class="btn ghost sm" data-act="tour-end" aria-label="End tour">' + ic('x') + '</button></div>' +
-      '<div class="tour-bar"><i style="width:' + (100 * (i + 1) / steps.length) + '%"></i></div><h2 id="tour-t">' + esc(st.title) + '</h2><p id="tour-d">' + esc(st.text) + '</p><div class="row" style="justify-content:flex-end;gap:8px">' +
+    return '<div class="tour-block"></div><div class="tour-spot" id="tour-spot"></div><div class="tour-pop" id="tour-pop" role="dialog" aria-labelledby="tour-t" aria-describedby="tour-d"><div class="row" style="gap:8px"><span class="tour-n grow">' + (ui.tour.who === 'consultant' ? 'Consultant' : 'Customer') + ' tour, ' + (i + 1) + ' of ' + steps.length + '</span><button class="btn sm" data-act="tour-end" aria-label="End tour">' + ic('x') + '</button></div>' +
+      '<h2 id="tour-t">' + esc(st.title) + '</h2><p id="tour-d">' + esc(st.text) + '</p><div class="row" style="justify-content:flex-end;gap:8px;margin-top:4px">' +
       (i ? '<button class="btn" data-act="tour-back">Back</button>' : '') + (last && st.other ? '<button class="btn" data-act="tour-other">Now the customer tour</button>' : '') +
       '<button class="btn pri" id="tour-next" data-act="tour-next">' + (last ? 'Finish' : 'Next') + '</button></div></div>';
   }
@@ -990,11 +1002,11 @@
     } else {
       var x1 = Math.max(r.left - A.left - 6, 4), y1 = Math.max(r.top - A.top - 6, 4), x2 = Math.min(r.right - A.left + 6, A.width - 4), y2 = Math.min(r.bottom - A.top + 6, A.height - 4);
       spot.className = 'tour-spot'; spot.style.left = x1 + 'px'; spot.style.top = y1 + 'px'; spot.style.width = (x2 - x1) + 'px'; spot.style.height = (y2 - y1) + 'px';
-      if (A.width - x2 >= pw + m * 2) { px = x2 + m; py = y1; }
-      else if (x1 >= pw + m * 2) { px = x1 - pw - m; py = y1; }
-      else if (A.height - y2 >= ph + m * 2) { px = x1; py = y2 + m; }
+      if (A.height - y2 >= ph + m * 2) { px = x1; py = y2 + m; }
       else if (y1 >= ph + m * 2) { px = x1; py = y1 - ph - m; }
-      else { px = A.width - pw - m; py = A.height - ph - m; }
+      else if (A.width - x2 >= pw + m * 2) { px = x2 + m; py = y1; }
+      else if (x1 >= pw + m * 2) { px = x1 - pw - m; py = y1; }
+      else { px = A.width - pw - m - 10; py = A.height - ph - m - 10; }
     }
     pop.style.left = clamp(px, 12, Math.max(12, A.width - pw - 12)) + 'px'; pop.style.top = clamp(py, 12, Math.max(12, A.height - ph - 12)) + 'px';
     var a = document.activeElement; if (!a || a === document.body || !pop.contains(a)) { var nb = document.getElementById('tour-next'); if (nb) nb.focus({ preventScroll: true }); }
@@ -1003,7 +1015,7 @@
   /* ---------- actions ---------- */
   function openControl(id) {
     if (!scope().map[id]) return;
-    if (consultant()) { ui.sel = id; ui.f = { q: '', dom: '', st: '', track: '', comm: '' }; ui.drawer = null; if (ui.view !== 'assessment') location.hash = 'assessment'; else render(); setTimeout(function () { var el = document.querySelector('.li.on'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); }, 30); }
+    if (consultant()) { ui.sel = id; ui.f = { q: '', dom: '', st: '', track: '', comm: '' }; ui.drawer = null; go('review'); setTimeout(function () { var el = document.querySelector('.li.on'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); }, 30); }
     else { ui.drawer = { type: 'control', id: id }; render(); }
   }
   var ACT = {
@@ -1012,29 +1024,32 @@
     'tour-next': function () { tourStep(1); },
     'tour-back': function () { tourStep(-1); },
     'tour-end': function () { endTour(); },
-    'tour-other': function () { endTour(true); startTour('customer'); },
+    'tour-other': function () { var pv = ui.tourPrev; endTour(true); startTour('customer'); ui.tourPrev = pv; },
     as: function (el) { ui.asCustomer = el.dataset.v === '1'; ui.drawer = null; render(); },
-    start: function () { ask('Start this engagement?', 'The example data is put away and you begin with an empty workspace. Your answers are saved from then on.', 'Start', function () { ui.example = false; ui.exampleAuto = false; ui.sel = null; location.hash = 'scope'; render(); }); },
+    start: function () { ask('Start a real engagement?', 'The example data is put away and you begin with an empty workspace. Your answers are saved from then on.', 'Start', function () { ui.example = false; ui.exampleAuto = false; ui.sel = null; ui.qid = null; go('scope'); }); },
     answer: function (el) {
       if (!canWrite()) return;
       var p = P(), q = L.QUESTIONS.filter(function (x) { return x.id === el.dataset.q; })[0], v = el.dataset.v;
       if (q.type === 'one') p[q.id] = v;
       else { var arr = (p[q.id] || []).slice(), i = arr.indexOf(v); if (i >= 0) arr.splice(i, 1); else { if (q.none && v === q.none) arr = [v]; else { arr = arr.filter(function (z) { return z !== q.none; }); arr.push(v); } } p[q.id] = arr; }
       save('profile'); render();
+      if (q.type === 'one') { clearTimeout(advT); advT = setTimeout(function () { if (ui.view === 'scope' && ui.qid === q.id && !ui.tour) qStep(1); }, 320); }
     },
+    'q-go': function (el) { clearTimeout(advT); ui.qid = el.dataset.id; render(); },
+    'q-next': function () { clearTimeout(advT); qStep(1); },
+    'q-back': function () { clearTimeout(advT); qStep(-1); },
     docst: function (el) { if (!canWrite()) return; var d = D(), id = el.dataset.id, e = d.evidence[id] || (d.evidence[id] = { state: '', files: [] }); var v = el.dataset.v; e.state = e.state === v ? ((e.files && e.files.length) ? 'provided' : '') : v; save('evidence', id); render(); },
     rmfile: function (el) {
       var id = el.dataset.doc, i = +el.dataset.i, e = D().evidence[id], f = e && e.files[i]; if (!f) return;
       ask('Remove this file?', f.name + ' will be removed from the workspace. This cannot be undone.', 'Remove', function () {
         var done = function () { e.files.splice(i, 1); if (!e.files.length && e.state === 'provided') e.state = ''; save('evidence', id); render(); };
-        if (f.id && ui.assets) ui.assets.delete(f.id).then(done, function (err) { if (err && err.code === 'not_uploader') toast('Only the person who added this file, or a consultant, can remove it.', 'bad'); else done(); });
+        if (f.id && ui.assets) ui.assets.delete(f.id).then(done, function (err) { if (err && err.code === 'not_uploader') { toast('Only the person who added this file, or a consultant, can remove it.', 'bad'); render(); } else done(); });
         else done();
       });
     },
     resp: function (el) { if (!canWrite()) return; var d = D(), id = el.dataset.id, r = d.responses[id] || (d.responses[id] = {}); if (r.a === el.dataset.v) delete r.a; else r.a = el.dataset.v; save('responses', id); render(); },
     qf: function (el) { ui.qf = el.dataset.v; render(); },
     gf: function (el) { ui.gf = el.dataset.v; render(); },
-    ftrack: function (el) { ui.f.track = el.dataset.v; render(); },
     fst: function (el) { ui.f.st = el.dataset.v; render(); },
     filter: function (el) { ui.f = { q: '', dom: el.dataset.dom || '', st: el.dataset.st || '', track: '', comm: '' }; ui.sel = null; },
     sel: function (el) { ui.sel = el.dataset.id || null; render(); },
@@ -1044,7 +1059,7 @@
     'act-new': function () { ui.drawer = { type: 'activity', id: null, draft: {} }; render(); },
     'act-edit': function (el) { var a = D().activities[el.dataset.id]; if (a) { ui.drawer = { type: 'activity', id: el.dataset.id, draft: clone(a) }; render(); } },
     'act-save': function () { var dr = ui.drawer, a = dr.draft; if (!a.name || !a.name.trim()) { toast('Give the activity a name first.', 'bad'); return; } if (a.special !== 'y') delete a.basis2; if (a.basis !== 'f') delete a.lia; if (a.xb !== 'y') { delete a.xbCountry; delete a.xbGround; } var id = dr.id || uid(); D().activities[id] = a; save('activities', id); ui.drawer = null; render(); },
-    'act-del': function (el) { var id = el.dataset.id; ask('Delete this activity?', 'It is removed from the processing register. This cannot be undone.', 'Delete', function () { delete D().activities[id]; save('activities', id); ui.drawer = null; render(); }); },
+    'act-del': function (el) { var id = el.dataset.id; ask('Delete this activity?', 'It is removed from the activities list. This cannot be undone.', 'Delete', function () { delete D().activities[id]; save('activities', id); ui.drawer = null; render(); }); },
     close: function () { if (checkCtl) checkCtl.abort(); ui.drawer = null; render(); },
     'dlg-no': function () { ui.dialog = null; dialogFn = null; render(); },
     'dlg-yes': function () { var fn = dialogFn; ui.dialog = null; dialogFn = null; if (fn) fn(); else render(); },
@@ -1060,11 +1075,10 @@
     export: function (el) { exportWhat(el.dataset.what); },
     release: function () {
       var prov = tally(scope().list).prov;
-      ask('Release findings to the customer?', 'The customer will see every finding as it stands now, with the gap register, roadmap and report.' + (prov ? ' ' + plural(prov, 'finding') + ' will be shown as provisional.' : ''), 'Release', function () { doRelease(true); });
+      ask('Release findings to the customer?', 'The customer will see every finding as it stands now, with the gaps, roadmap and report.' + (prov ? ' ' + plural(prov, 'finding') + ' will be shown as provisional.' : ''), 'Release', function () { doRelease(true); });
     },
-    unrelease: function () { ask('Withdraw the release?', 'The customer will no longer see findings, the gap register, the roadmap or the report.', 'Withdraw', function () { doRelease(false); }); }
+    unrelease: function () { ask('Withdraw the release?', 'The customer will no longer see findings, the roadmap or the report.', 'Withdraw', function () { doRelease(false); }); }
   };
-
   function setBound(el) {
     if (!canWrite()) return false;
     var parts = el.dataset.bind.split(':'), kind = parts[0], id = parts[1], field = parts[2], d = D(), v = el.type === 'checkbox' ? el.checked : el.value;
@@ -1072,7 +1086,6 @@
     var o = d[kind][id] || (d[kind][id] = kind === 'evidence' ? { state: '', files: [] } : {});
     if ((o[field] || '') === v) return false;
     if (v === '' || v === false) delete o[field]; else o[field] = v;
-    if (kind === 'findings' && (field === 'obs' || field === 'rec')) { /* text edits keep the sign-off */ }
     save(kind, id); return true;
   }
   document.addEventListener('click', function (ev) {
@@ -1110,6 +1123,6 @@
   window.addEventListener('resize', function () { if (ui.tour) positionTour(); });
   window.addEventListener('pagehide', function () { if (ui.mode === 'remote') flushAll(); });
 
-  window.__pdpa = { ui: ui, state: function () { return state; }, D: D, scope: scope, info: info, tally: tally, readiness: readiness, maskText: maskText, quoteFound: quoteFound, riskOf: riskOf, render: render };
+  window.__pdpa = { ui: ui, state: function () { return state; }, D: D, scope: scope, info: info, tally: tally, readiness: readiness, maskText: maskText, quoteFound: quoteFound, riskOf: riskOf, render: render, go: go };
   init();
 })();

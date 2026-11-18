@@ -45,7 +45,7 @@ window.PDPA = (function () {
   };
 
   var DOCS = [
-    { id: 'ropa', g: 'gov', name: 'Record of processing activities', desc: 'What personal data is processed, why, on which lawful basis and who receives it. If there is none, build it in the Processing register and this item completes itself.' },
+    { id: 'ropa', g: 'gov', name: 'Record of processing activities', desc: 'What personal data is processed, why, on which lawful basis and who receives it. If there is none, build it under Activities and this item completes itself.' },
     { id: 'notice', g: 'gov', name: 'Privacy notices', desc: 'Every notice given to individuals when their data is collected: website, app, forms, customer and employee notices.' },
     { id: 'consent', g: 'gov', name: 'Consent wording and consent records', desc: 'The wording used to ask for consent and how each consent is recorded.' },
     { id: 'forms', g: 'gov', name: 'Data collection forms', desc: 'Samples of the forms, screens or scripts used to collect personal data. Blank copies only.' },
